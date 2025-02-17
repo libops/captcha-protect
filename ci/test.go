@@ -66,7 +66,7 @@ func generateUniquePublicIPs(n int) []string {
 
 	for len(ips) < n {
 		ip := randomPublicIP()
-		ip, ipRange := cp.ParseIp(ip)
+		ip, ipRange := cp.ParseIp(ip, 16, 64)
 		if _, exists := ipSet[ipRange]; !exists {
 			ipSet[ipRange] = struct{}{}
 			ips = append(ips, ip)

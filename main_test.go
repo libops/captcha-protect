@@ -3,6 +3,7 @@ package captcha_protect
 import (
 	"errors"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -118,6 +119,88 @@ func TestIsIpGoodBot(t *testing.T) {
 			result := IsIpGoodBot(tc.clientIP, tc.goodBots)
 			if result != tc.expected {
 				t.Errorf("IsIpGoodBot(%q) = %v; expected %v", tc.clientIP, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestParseIp(t *testing.T) {
+	tests := []struct {
+		name       string
+		ip         string
+		ipv4Mask   int
+		ipv6Mask   int
+		wantFull   string
+		wantSubnet string
+	}{
+		{
+			name:       "IPv4 /8",
+			ip:         "192.168.1.1",
+			ipv4Mask:   8,
+			ipv6Mask:   64, // unused for IPv4
+			wantFull:   "192.168.1.1",
+			wantSubnet: "192",
+		},
+		{
+			name:       "IPv4 /16",
+			ip:         "192.168.1.1",
+			ipv4Mask:   16,
+			ipv6Mask:   64, // unused for IPv4
+			wantFull:   "192.168.1.1",
+			wantSubnet: "192.168",
+		},
+		{
+			name:       "IPv4 /24",
+			ip:         "192.168.1.1",
+			ipv4Mask:   24,
+			ipv6Mask:   64, // unused for IPv4
+			wantFull:   "192.168.1.1",
+			wantSubnet: "192.168.1",
+		},
+		{
+			name:       "IPv4 unrecognized mask falls back to /16",
+			ip:         "192.168.1.1",
+			ipv4Mask:   32, // not one of the allowed values; fallback in our implementation is /16.
+			ipv6Mask:   64,
+			wantFull:   "192.168.1.1",
+			wantSubnet: "192.168",
+		},
+		{
+			name:     "IPv6 /64",
+			ip:       "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			ipv4Mask: 16, // unused for IPv6
+			ipv6Mask: 64,
+			wantFull: "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			// for /64, we keep 4 hextets
+			wantSubnet: strings.Join(strings.Split("2001:0db8:85a3:0000:0000:8a2e:0370:7334", ":")[:4], ":"),
+		},
+		{
+			name:     "IPv6 /48",
+			ip:       "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			ipv4Mask: 16, // unused for IPv6
+			ipv6Mask: 48,
+			wantFull: "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			// for /48, we keep 3 hextets
+			wantSubnet: strings.Join(strings.Split("2001:0db8:85a3:0000:0000:8a2e:0370:7334", ":")[:3], ":"),
+		},
+		{
+			name:       "Invalid IP returns same string",
+			ip:         "not.an.ip",
+			ipv4Mask:   16,
+			ipv6Mask:   64,
+			wantFull:   "not.an.ip",
+			wantSubnet: "not.an.ip",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotFull, gotSubnet := ParseIp(tc.ip, tc.ipv4Mask, tc.ipv6Mask)
+			if gotFull != tc.wantFull {
+				t.Errorf("ParseIp(%q, %d, %d) got full = %q, want %q", tc.ip, tc.ipv4Mask, tc.ipv6Mask, gotFull, tc.wantFull)
+			}
+			if gotSubnet != tc.wantSubnet {
+				t.Errorf("ParseIp(%q, %d, %d) got subnet = %q, want %q", tc.ip, tc.ipv4Mask, tc.ipv6Mask, gotSubnet, tc.wantSubnet)
 			}
 		})
 	}

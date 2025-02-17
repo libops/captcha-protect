@@ -330,26 +330,44 @@ func (bc *CaptchaProtect) getClientIP(req *http.Request) (string, string) {
 		ip = host
 	}
 
-	return ParseIp(ip)
+	return ParseIp(ip, bc.config.IPv4SubnetMask, bc.config.IPv6SubnetMask)
 }
 
-func ParseIp(ip string) (string, string) {
+func ParseIp(ip string, ipv4Mask, ipv6Mask int) (string, string) {
 	parsedIP := net.ParseIP(ip)
 	if parsedIP == nil {
 		return ip, ip
 	}
 
+	// For IPv4 addresses
 	if parsedIP.To4() != nil {
 		ipParts := strings.Split(ip, ".")
-		if len(ipParts) >= 2 {
-			return ip, ipParts[0] + "." + ipParts[1]
+		var required int
+		switch ipv4Mask {
+		case 8:
+			required = 1
+		case 16:
+			required = 2
+		case 24:
+			required = 3
+		default:
+			// fallback to a default, for example /16
+			required = 2
+		}
+		if len(ipParts) >= required {
+			subnet := strings.Join(ipParts[:required], ".")
+			return ip, subnet
 		}
 	}
 
+	// For IPv6 addresses
 	if parsedIP.To16() != nil {
 		ipParts := strings.Split(ip, ":")
-		if len(ipParts) >= 4 {
-			return ip, strings.Join(ipParts[:4], ":")
+		// Calculate the number of hextets required.
+		required := ipv6Mask / 16
+		if len(ipParts) >= required {
+			subnet := strings.Join(ipParts[:required], ":")
+			return ip, subnet
 		}
 	}
 
