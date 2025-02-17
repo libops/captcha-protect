@@ -12,11 +12,13 @@ services:
             traefik.http.routers.nginx.middlewares: captcha-protect@docker
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.challengeTmpl: /plugins-local/src/github.com/libops/captcha-protect/challenge.tmpl.html
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.captchaProvider: turnstile
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.window: 120
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.rateLimit: ${RATE_LIMIT}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.siteKey: ${TURNSTILE_SITE_KEY}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.secretKey: ${TURNSTILE_SECRET_KEY}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableStatsPage: "true"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.ipForwardedHeader: "X-Forwarded-For"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.logLevel: "DEBUG"
         healthcheck:
             test: curl -fs http://localhost/healthz | grep -q OK || exit 1
         volumes:
