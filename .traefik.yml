@@ -4,4 +4,9 @@ type: middleware
 import: github.com/libops/captcha-protect
 testData:
   ChallengeTmpl: challenge.tmpl.html
+  Window: 86400
+  RateLimit: 20
+  IPForwardedHeader: "X-Forwarded-For"
   CaptchaProvider: turnstile
+  SiteKey: 1x00000000000000000000AA
+  SecretKey: 1x0000000000000000000000000000000AA

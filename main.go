@@ -23,22 +23,22 @@ var (
 )
 
 type Config struct {
-	RateLimit         uint          `json:"rateLimit"`
-	Window            time.Duration `json:"window"`
-	IPv4SubnetMask    int           `json:"ipv4subnetMask"`
-	IPv6SubnetMask    int           `json:"ipv6subnetMask"`
-	IPForwardedHeader string        `json:"ipForwardedHeader"`
-	ProtectParameters string        `json:"protectedParameters"`
-	ProtectRoutes     []string      `json:"protectRoutes"`
-	GoodBots          []string      `json:"goodBots"`
-	ExemptIPs         []string      `json:"exemptIps"`
-	ChallengeURL      string        `json:"challengeURL"`
-	ChallengeTmpl     string        `json:"challengeTmpl"`
-	CaptchaProvider   string        `json:"captchaProvider"`
-	SiteKey           string        `json:"siteKey"`
-	SecretKey         string        `json:"secretKey"`
-	EnableStatsPage   string        `json:"enableStatsPage"`
-	LogLevel          string        `json:"loglevel,omitempty"`
+	RateLimit         uint     `json:"rateLimit"`
+	Window            int64    `json:"window"`
+	IPv4SubnetMask    int      `json:"ipv4subnetMask"`
+	IPv6SubnetMask    int      `json:"ipv6subnetMask"`
+	IPForwardedHeader string   `json:"ipForwardedHeader"`
+	ProtectParameters string   `json:"protectParameters"`
+	ProtectRoutes     []string `json:"protectRoutes"`
+	GoodBots          []string `json:"goodBots"`
+	ExemptIPs         []string `json:"exemptIps"`
+	ChallengeURL      string   `json:"challengeURL"`
+	ChallengeTmpl     string   `json:"challengeTmpl"`
+	CaptchaProvider   string   `json:"captchaProvider"`
+	SiteKey           string   `json:"siteKey"`
+	SecretKey         string   `json:"secretKey"`
+	EnableStatsPage   string   `json:"enableStatsPage"`
+	LogLevel          string   `json:"loglevel,omitempty"`
 }
 
 type CaptchaProtect struct {
@@ -65,7 +65,7 @@ type captchaResponse struct {
 func CreateConfig() *Config {
 	return &Config{
 		RateLimit:         20,
-		Window:            24 * time.Hour,
+		Window:            86400,
 		IPv4SubnetMask:    16,
 		IPv6SubnetMask:    64,
 		IPForwardedHeader: "",
@@ -102,6 +102,9 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}
 	log.Default().Level = logLevel
 
+	expiration := time.Duration(config.Window) * time.Second
+	log.Debugf("WINDOW: %f", expiration.Seconds())
+
 	if _, err := os.Stat(config.ChallengeTmpl); os.IsNotExist(err) {
 		return nil, fmt.Errorf("template file does not exist: %s", config.ChallengeTmpl)
 	} else if err != nil {
@@ -132,8 +135,8 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		next:      next,
 		name:      name,
 		config:    config,
-		rateCache: lru.New(config.Window, 10*time.Minute),
-		botCache:  lru.New(config.Window, 10*time.Minute),
+		rateCache: lru.New(expiration, 1*time.Minute),
+		botCache:  lru.New(expiration, 1*time.Minute),
 		// allow good IPs to pass through for ten days
 		verifiedCache: lru.New(240*time.Hour, 1*time.Hour),
 		exemptIps:     ips,
@@ -201,16 +204,20 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter) {
 	tmpl, err := template.ParseFiles(bc.config.ChallengeTmpl)
 	if err != nil {
-		http.Error(rw, fmt.Sprintf("Error parsing template: %v", err), http.StatusInternalServerError)
+		log.Errorf("Unable to parse go template %s: %v", bc.config.ChallengeTmpl, err)
+		http.Error(rw, "Internal error", http.StatusInternalServerError)
 		return
 	}
-	err = tmpl.Execute(rw, map[string]string{
+
+	d := map[string]string{
 		"SiteKey":      bc.config.SiteKey,
 		"FrontendJS":   bc.captchaConfig.js,
 		"FrontendKey":  bc.captchaConfig.key,
 		"ChallengeURL": bc.config.ChallengeURL,
-	})
+	}
+	err = tmpl.Execute(rw, d)
 	if err != nil {
+		log.Errorf("Unable to execute go template %s: %v %v", bc.config.ChallengeTmpl, d, err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
 		return
 	}
@@ -243,6 +250,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	body.Add("response", response)
 	resp, err := http.PostForm(bc.captchaConfig.validate, body)
 	if err != nil {
+		log.Errorf("Unable to validate captcha %s: %v %v", bc.captchaConfig.validate, body, err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
 		return
 	}
@@ -251,6 +259,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	var captchaResponse captchaResponse
 	err = json.NewDecoder(resp.Body).Decode(&captchaResponse)
 	if err != nil {
+		log.Errorf("Unable to unmarshal captcha response %s: %v", bc.captchaConfig.validate, err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
 		return
 	}
@@ -300,8 +309,7 @@ func IsIpExcluded(clientIP string, exemptIps []*net.IPNet) bool {
 func (bc *CaptchaProtect) trippedRateLimit(ip string) bool {
 	v, ok := bc.rateCache.Get(ip)
 	if !ok {
-		// todo: better logging
-		os.Stderr.WriteString(fmt.Sprintf("IP not found: %s\n", ip))
+		log.Errorf("IP not found, but should already be set: %s\n", ip)
 		return false
 	}
 	return v.(uint) > bc.config.RateLimit
