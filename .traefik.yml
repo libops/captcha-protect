@@ -3,4 +3,5 @@ summary: Challenge individual IPs in a subnet when traffic spikes are detected f
 type: middleware
 import: github.com/libops/captcha-protect
 testData:
-  ChallengeURL: "/challenge"
+  ChallengeTmpl: challenge.tmpl.html
+  CaptchaProvider: turnstile
