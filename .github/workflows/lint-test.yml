@@ -20,6 +20,9 @@ jobs:
         with:
           version: latest
 
+      - name: check YML
+        run: yq . .traefik.yml
+
       - name: go mod tidy
         run: |
           go mod tidy
