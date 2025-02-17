@@ -291,10 +291,9 @@ func (bc *CaptchaProtect) trippedRateLimit(ip string) bool {
 }
 
 func (bc *CaptchaProtect) registerRequest(ip string) {
-	_, err := bc.rateCache.IncrementUint(ip, 1)
+	err := bc.rateCache.Add(ip, uint(1), lru.DefaultExpiration)
 	if err != nil {
-		var count uint = 1
-		bc.rateCache.Set(ip, count, lru.DefaultExpiration)
+		bc.rateCache.IncrementUint(ip, uint(1))
 	}
 }
 
