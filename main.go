@@ -83,14 +83,17 @@ func CreateConfig() *Config {
 		},
 		ChallengeURL:    "/challenge",
 		EnableStatsPage: "false",
+		ChallengeTmpl:   "",
 	}
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	if _, err := os.Stat(config.ChallengeTmpl); os.IsNotExist(err) {
-		return nil, fmt.Errorf("template file does not exist: %s", config.ChallengeTmpl)
-	} else if err != nil {
-		return nil, fmt.Errorf("error check for template file %s: %v", config.ChallengeTmpl, err)
+	if config.ChallengeTmpl != "" {
+		if _, err := os.Stat(config.ChallengeTmpl); os.IsNotExist(err) {
+			return nil, fmt.Errorf("template file does not exist: %s", config.ChallengeTmpl)
+		} else if err != nil {
+			return nil, fmt.Errorf("error check for template file %s: %v", config.ChallengeTmpl, err)
+		}
 	}
 
 	// always exempt local IPs
