@@ -51,7 +51,7 @@ jobs:
 
       - name: get stats
         run: |
-          curl -s -H "X-Forwarded-For: 127.0.0.1" http://localhost/botcheck/stats | sort -n
+          curl -s -H "X-Forwarded-For: 127.0.0.1" http://localhost/captcha-protect/stats | sort -n
 
       - name: cleanup
         if: ${{ always() }}
