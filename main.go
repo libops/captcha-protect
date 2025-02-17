@@ -17,6 +17,11 @@ import (
 	lru "github.com/patrickmn/go-cache"
 )
 
+var (
+	lookupAddrFunc = net.LookupAddr
+	lookupIPFunc   = net.LookupIP
+)
+
 type Config struct {
 	RateLimit         uint          `json:"rateLimit"`
 	Window            time.Duration `json:"window"`
@@ -370,13 +375,13 @@ func (bc *CaptchaProtect) isGoodBot(req *http.Request, clientIP string) bool {
 
 func IsIpGoodBot(clientIP string, goodBots []string) bool {
 	// lookup the hostname for a given IP
-	hostname, err := net.LookupAddr(clientIP)
+	hostname, err := lookupAddrFunc(clientIP)
 	if err != nil || len(hostname) == 0 {
 		return false
 	}
 
 	// then nslookup that hostname to avoid spoofing
-	resolvedIP, err := net.LookupIP(hostname[0])
+	resolvedIP, err := lookupIPFunc(hostname[0])
 	if err != nil || len(resolvedIP) == 0 || resolvedIP[0].String() != clientIP {
 		return false
 	}
