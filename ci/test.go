@@ -20,7 +20,7 @@ var rateLimit = 5
 var exemptIps []*net.IPNet
 
 const numIPs = 100
-const parallelism = 5
+const parallelism = 10
 const expectedRedirectURL = "http://localhost/challenge"
 
 func main() {
