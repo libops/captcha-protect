@@ -6,7 +6,7 @@ You may have seen captchas added to individual forms on the web to protect from 
 
 ## Config
 
-| JSON Key            | Type              | Default Value           | Description  |
+| JSON Key            | Type              | Default Value           | Description                                                                                                                                             |
 |---------------------|-------------------|-------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
 | captchaProvider     | string (required) | ""                      | The captcha type to use. Supported values are turnstile, hcaptcha, and recaptcha.                                                                       |
 | siteKey             | string (required) | ""                      | The captcha site key                                                                                                                                    |
@@ -19,10 +19,11 @@ You may have seen captchas added to individual forms on the web to protect from 
 | protectRoutes       | []string          | ["/"]                   | Routes that start with the string(s) in this list. e.g. "/" protects the whole site. "/browse" protects any URL that starts with that string.           |
 | goodBots            | []string          | see below               | List of second level domain names for bots that are never challened/rate limited. This it to keep your SEO score stable when this plugin is enabled     |
 | protectParameters   | string            | "false"                 | Do not allow even good bots to pass the rate limiter if the request has URL parameters. Meant to help protect faceted search pages.                     |
-| exemptIps           | []string          | privateIPs              | IP address(es) that should never be challened                                                                                                           |
+| exemptIps           | []string          | privateIPs              | IP address(es) in CIDR format that should never be challenged                                                                                           |
 | challengeURL        | string            | "/challenge"            | The URL on the site to send challenges to. Will override any URL at that route                                                                          |
 | challengeTmpl       | string            | "./challenge.tmpl.html" | HTML go template file to serve the captcha challenge.                                                                                                   |
-| enableStatsPage     | string            | "false"                 | Allow 127.0.0.1 to access /captcha-protect/stats to see the status of the rate limiter                                                                  |
+| enableStatsPage     | string            | "false"                 | Allow 127.0.0.1 to access `/captcha-protect/stats` to see the status of the rate limiter                                                                |
+| logLevel            | string            | "INFO"                  | This middleware's log level. Possible values: ERROR, WARNING, INFO, or DEBUG                                                                            |
 
 
 ### Good Bots

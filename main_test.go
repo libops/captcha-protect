@@ -1,0 +1,207 @@
+package captcha_protect
+
+import (
+	"errors"
+	"net"
+	"strings"
+	"testing"
+)
+
+func TestIsIpGoodBot(t *testing.T) {
+	// Save the original functions and restore them at the end.
+	origLookupAddr := lookupAddrFunc
+	origLookupIP := lookupIPFunc
+	defer func() {
+		lookupAddrFunc = origLookupAddr
+		lookupIPFunc = origLookupIP
+	}()
+
+	tests := []struct {
+		name             string
+		clientIP         string
+		goodBots         []string
+		lookupAddrReturn []string
+		lookupAddrErr    error
+		lookupIPReturn   []net.IP
+		lookupIPErr      error
+		expected         bool
+	}{
+		{
+			name:             "DNS lookup fails",
+			clientIP:         "1.2.3.4",
+			goodBots:         []string{"google.com"},
+			lookupAddrReturn: nil,
+			lookupAddrErr:    errors.New("dns error"),
+			expected:         false,
+		},
+		{
+			name:             "Empty hostname result",
+			clientIP:         "1.2.3.4",
+			goodBots:         []string{"google.com"},
+			lookupAddrReturn: []string{},
+			lookupAddrErr:    nil,
+			expected:         false,
+		},
+		{
+			name:     "Spoofed hostname: resolved IP does not match clientIP",
+			clientIP: "1.2.3.4",
+			goodBots: []string{"google.com"},
+			lookupAddrReturn: []string{
+				"host.example.com.",
+			},
+			lookupAddrErr: nil,
+			lookupIPReturn: []net.IP{
+				net.ParseIP("5.6.7.8"),
+			},
+			lookupIPErr: nil,
+			expected:    false,
+		},
+		{
+			name:     "Hostname does not have enough parts",
+			clientIP: "1.2.3.4",
+			goodBots: []string{"example.com"},
+			lookupAddrReturn: []string{
+				"localhost.",
+			},
+			lookupAddrErr: nil,
+			lookupIPReturn: []net.IP{
+				net.ParseIP("1.2.3.4"),
+			},
+			lookupIPErr: nil,
+			expected:    false,
+		},
+		{
+			name:     "Not a good bot because domain does not match",
+			clientIP: "1.2.3.4",
+			goodBots: []string{"google.com"},
+			lookupAddrReturn: []string{
+				"foo.bar.example.com.",
+			},
+			lookupAddrErr: nil,
+			lookupIPReturn: []net.IP{
+				net.ParseIP("1.2.3.4"),
+			},
+			lookupIPErr: nil,
+			expected:    false,
+		},
+		{
+			name:     "Is a good bot",
+			clientIP: "1.2.3.4",
+			goodBots: []string{"example.com"},
+			lookupAddrReturn: []string{
+				"194.114.135.34.bc.example.com.",
+			},
+			lookupAddrErr: nil,
+			lookupIPReturn: []net.IP{
+				net.ParseIP("1.2.3.4"),
+			},
+			lookupIPErr: nil,
+			expected:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		lookupAddrFunc = func(ip string) ([]string, error) {
+			if ip != tc.clientIP {
+				t.Errorf("Expected lookupAddr to be called with %q; got %q", tc.clientIP, ip)
+			}
+			return tc.lookupAddrReturn, tc.lookupAddrErr
+		}
+
+		lookupIPFunc = func(host string) ([]net.IP, error) {
+			if len(tc.lookupAddrReturn) == 0 || host != tc.lookupAddrReturn[0] {
+				t.Errorf("Expected lookupIP to be called with %q; got %q", tc.lookupAddrReturn[0], host)
+			}
+			return tc.lookupIPReturn, tc.lookupIPErr
+		}
+
+		t.Run(tc.name, func(t *testing.T) {
+			result := IsIpGoodBot(tc.clientIP, tc.goodBots)
+			if result != tc.expected {
+				t.Errorf("IsIpGoodBot(%q) = %v; expected %v", tc.clientIP, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestParseIp(t *testing.T) {
+	tests := []struct {
+		name       string
+		ip         string
+		ipv4Mask   int
+		ipv6Mask   int
+		wantFull   string
+		wantSubnet string
+	}{
+		{
+			name:       "IPv4 /8",
+			ip:         "192.168.1.1",
+			ipv4Mask:   8,
+			ipv6Mask:   64, // unused for IPv4
+			wantFull:   "192.168.1.1",
+			wantSubnet: "192",
+		},
+		{
+			name:       "IPv4 /16",
+			ip:         "192.168.1.1",
+			ipv4Mask:   16,
+			ipv6Mask:   64, // unused for IPv4
+			wantFull:   "192.168.1.1",
+			wantSubnet: "192.168",
+		},
+		{
+			name:       "IPv4 /24",
+			ip:         "192.168.1.1",
+			ipv4Mask:   24,
+			ipv6Mask:   64, // unused for IPv4
+			wantFull:   "192.168.1.1",
+			wantSubnet: "192.168.1",
+		},
+		{
+			name:       "IPv4 unrecognized mask falls back to /16",
+			ip:         "192.168.1.1",
+			ipv4Mask:   32, // not one of the allowed values; fallback in our implementation is /16.
+			ipv6Mask:   64,
+			wantFull:   "192.168.1.1",
+			wantSubnet: "192.168",
+		},
+		{
+			name:     "IPv6 /64",
+			ip:       "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			ipv4Mask: 16, // unused for IPv6
+			ipv6Mask: 64,
+			wantFull: "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			// for /64, we keep 4 hextets
+			wantSubnet: strings.Join(strings.Split("2001:0db8:85a3:0000:0000:8a2e:0370:7334", ":")[:4], ":"),
+		},
+		{
+			name:     "IPv6 /48",
+			ip:       "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			ipv4Mask: 16, // unused for IPv6
+			ipv6Mask: 48,
+			wantFull: "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			// for /48, we keep 3 hextets
+			wantSubnet: strings.Join(strings.Split("2001:0db8:85a3:0000:0000:8a2e:0370:7334", ":")[:3], ":"),
+		},
+		{
+			name:       "Invalid IP returns same string",
+			ip:         "not.an.ip",
+			ipv4Mask:   16,
+			ipv6Mask:   64,
+			wantFull:   "not.an.ip",
+			wantSubnet: "not.an.ip",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotFull, gotSubnet := ParseIp(tc.ip, tc.ipv4Mask, tc.ipv6Mask)
+			if gotFull != tc.wantFull {
+				t.Errorf("ParseIp(%q, %d, %d) got full = %q, want %q", tc.ip, tc.ipv4Mask, tc.ipv6Mask, gotFull, tc.wantFull)
+			}
+			if gotSubnet != tc.wantSubnet {
+				t.Errorf("ParseIp(%q, %d, %d) got subnet = %q, want %q", tc.ip, tc.ipv4Mask, tc.ipv6Mask, gotSubnet, tc.wantSubnet)
+			}
+		})
+	}
+}

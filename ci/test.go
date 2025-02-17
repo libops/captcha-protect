@@ -21,7 +21,7 @@ var exemptIps []*net.IPNet
 
 const numIPs = 100
 const parallelism = 10
-const expectedRedirectURL = "http://localhost/challenge"
+const expectedRedirectURL = "http://localhost/challenge?destination=%2F"
 
 func main() {
 	_ips := []string{
@@ -66,7 +66,7 @@ func generateUniquePublicIPs(n int) []string {
 
 	for len(ips) < n {
 		ip := randomPublicIP()
-		ip, ipRange := cp.ParseIp(ip)
+		ip, ipRange := cp.ParseIp(ip, 16, 64)
 		if _, exists := ipSet[ipRange]; !exists {
 			ipSet[ipRange] = struct{}{}
 			ips = append(ips, ip)
