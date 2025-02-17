@@ -24,9 +24,8 @@ jobs:
       - name: create release
         run: |-
           TAG=$(autotag)
-          git tag $TAG
-          git push origin $TAG
-          gh release create $TAG --title "$TAG" --generate-notes
+          git push origin v$TAG
+          gh release create v$TAG --title "v$TAG" --generate-notes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
