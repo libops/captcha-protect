@@ -12,6 +12,8 @@ import (
 	"text/template"
 	"time"
 
+	log "github.com/discoverygarden/traefik-ultimate-bad-bot-blocker/utils"
+
 	lru "github.com/patrickmn/go-cache"
 )
 
@@ -31,6 +33,7 @@ type Config struct {
 	SiteKey           string        `json:"siteKey"`
 	SecretKey         string        `json:"secretKey"`
 	EnableStatsPage   string        `json:"enableStatsPage"`
+	LogLevel          string        `json:"loglevel,omitempty"`
 }
 
 type CaptchaProtect struct {
@@ -83,10 +86,17 @@ func CreateConfig() *Config {
 		},
 		ChallengeURL:    "/challenge",
 		EnableStatsPage: "false",
+		LogLevel:        "INFO",
 	}
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+	logLevel, err := log.ParseLevel(config.LogLevel)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set log level: %w", err)
+	}
+	log.Default().Level = logLevel
+
 	if _, err := os.Stat(config.ChallengeTmpl); os.IsNotExist(err) {
 		return nil, fmt.Errorf("template file does not exist: %s", config.ChallengeTmpl)
 	} else if err != nil {
@@ -292,8 +302,13 @@ func (bc *CaptchaProtect) trippedRateLimit(ip string) bool {
 
 func (bc *CaptchaProtect) registerRequest(ip string) {
 	err := bc.rateCache.Add(ip, uint(1), lru.DefaultExpiration)
+	if err == nil {
+		return
+	}
+
+	_, err = bc.rateCache.IncrementUint(ip, uint(1))
 	if err != nil {
-		bc.rateCache.IncrementUint(ip, uint(1))
+		log.Errorf("Unable to set rate cache for %s", ip)
 	}
 }
 
