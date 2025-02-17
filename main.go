@@ -190,7 +190,9 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	bc.registerRequest(ipRange)
 
 	if bc.trippedRateLimit(ipRange) {
-		http.Redirect(rw, req, bc.config.ChallengeURL, http.StatusFound)
+		encodedURI := url.QueryEscape(req.RequestURI)
+		url := fmt.Sprintf("%s?destination=%s", bc.config.ChallengeURL, encodedURI)
+		http.Redirect(rw, req, url, http.StatusFound)
 	} else {
 		bc.next.ServeHTTP(rw, req)
 	}
@@ -254,7 +256,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	}
 	if captchaResponse.Success {
 		bc.verifiedCache.Set(ip, true, lru.DefaultExpiration)
-		http.Redirect(rw, req, "/", http.StatusFound)
+		http.Redirect(rw, req, req.URL.Query().Get("destination"), http.StatusFound)
 		return
 	}
 

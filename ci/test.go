@@ -21,7 +21,7 @@ var exemptIps []*net.IPNet
 
 const numIPs = 100
 const parallelism = 10
-const expectedRedirectURL = "http://localhost/challenge"
+const expectedRedirectURL = "http://localhost/challenge?destination=%2F"
 
 func main() {
 	_ips := []string{
