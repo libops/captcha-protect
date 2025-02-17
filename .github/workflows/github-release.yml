@@ -1,0 +1,32 @@
+name: Create release
+on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - closed
+permissions:
+  contents: write
+  actions: write
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          fetch-depth: 0
+
+      - name: install autotag binary
+        run: curl -sL https://git.io/autotag-install | sudo sh -s -- -b /usr/bin
+
+      - name: create release
+        run: |-
+          TAG=$(autotag)
+          git tag $TAG
+          git push origin $TAG
+          gh release create $TAG
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

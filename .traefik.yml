@@ -1,0 +1,6 @@
+displayName: Captcha Protect
+summary: Challenge individual IPs in a subnet when traffic spikes are detected from that subnet, using a captcha of your choice for the challenge
+type: middleware
+import: github.com/libops/captcha-protect
+testData:
+  ChallengeURL: "/challenge"
