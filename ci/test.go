@@ -55,6 +55,11 @@ func main() {
 	fmt.Printf("Making sure attempt #%d causes a redirect to the challenge page\n", rateLimit+1)
 	ensureRedirect(ips)
 
+	fmt.Println("Sleeping for 3m")
+	time.Sleep(3 * time.Minute)
+	fmt.Printf("Making sure %d attempt(s) pass after 2m window\n", rateLimit)
+	runParallelChecks(ips, 1)
+
 	fmt.Println("All good 🚀")
 
 	runCommand("docker", "container", "stats", "--no-stream")
@@ -182,6 +187,7 @@ func runCommand(name string, args ...string) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(cmd.Env, fmt.Sprintf("RATE_LIMIT=%d", rateLimit))
+	cmd.Env = append(cmd.Env, fmt.Sprintf("PATH=%s", os.Getenv("PATH")))
 	if err := cmd.Run(); err != nil {
 		log.Fatalf("Command failed: %v", err)
 	}
