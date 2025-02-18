@@ -3,6 +3,7 @@ summary: Challenge individual IPs in a subnet when traffic spikes are detected f
 type: middleware
 import: github.com/libops/captcha-protect
 testData:
+  ProtectRoutes: /
   ChallengeTmpl: challenge.tmpl.html
   Window: 86400
   RateLimit: 20

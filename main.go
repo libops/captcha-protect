@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"text/template"
 	"time"
@@ -62,6 +63,13 @@ type captchaResponse struct {
 	Success bool `json:"success"`
 }
 
+type statsResponse struct {
+	Rate     map[string]uint    `json:"rate"`
+	Bots     map[string]bool    `json:"bots"`
+	Verified map[string]bool    `json:"verified"`
+	Memory   map[string]uintptr `json:"memory"`
+}
+
 func CreateConfig() *Config {
 	return &Config{
 		RateLimit:         20,
@@ -70,28 +78,11 @@ func CreateConfig() *Config {
 		IPv6SubnetMask:    64,
 		IPForwardedHeader: "",
 		ProtectParameters: "false",
-		ProtectRoutes: []string{
-			"/",
-		},
-		GoodBots: []string{
-			"duckduckgo.com",
-			"kagibot.org",
-			"googleusercontent.com",
-			"google.com",
-			"googlebot.com",
-			"msn.com",
-			"openalex.org",
-			"archive.org",
-			"linkedin.com",
-			"facebook.com",
-			"instagram.com",
-			"twitter.com",
-			"x.com",
-			"apple.com",
-		},
-		ChallengeURL:    "/challenge",
-		EnableStatsPage: "false",
-		LogLevel:        "INFO",
+		ProtectRoutes:     []string{},
+		GoodBots:          []string{},
+		ChallengeURL:      "/challenge",
+		EnableStatsPage:   "false",
+		LogLevel:          "INFO",
 	}
 }
 
@@ -103,7 +94,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	log.Default().Level = logLevel
 
 	expiration := time.Duration(config.Window) * time.Second
-	log.Debugf("WINDOW: %f", expiration.Seconds())
+	log.Debugf("config: %+v", config)
+
+	if len(config.ProtectRoutes) == 0 {
+		return nil, fmt.Errorf("you must protect at least one route with the protectRoutes config value. / will cover your entire site")
+	}
 
 	if _, err := os.Stat(config.ChallengeTmpl); os.IsNotExist(err) {
 		return nil, fmt.Errorf("template file does not exist: %s", config.ChallengeTmpl)
@@ -225,17 +220,56 @@ func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter) {
 }
 
 func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
-	if ip != "127.0.0.1" {
+	// only allow excluded IPs from viewing
+	if !IsIpExcluded(ip, bc.exemptIps) {
 		http.Error(rw, "Forbidden", http.StatusForbidden)
 		return
 	}
 
-	fmt.Fprint(rw, "Hits\tRange\n")
-	for k, v := range bc.rateCache.Items() {
-		fmt.Fprintf(rw, "%d\t%s\n", v.Object.(uint), k)
+	resp := statsResponse{
+		Memory: make(map[string]uintptr, 3),
+	}
+
+	items := bc.rateCache.Items()
+	resp.Rate = make(map[string]uint, len(items))
+	resp.Memory["rate"] = reflect.TypeOf(resp.Rate).Size()
+	for k, v := range items {
+		resp.Rate[k] = v.Object.(uint)
+		resp.Memory["rate"] += reflect.TypeOf(k).Size()
+		resp.Memory["rate"] += reflect.TypeOf(v).Size()
+		resp.Memory["rate"] += uintptr(len(k))
+	}
+
+	items = bc.botCache.Items()
+	resp.Bots = make(map[string]bool, len(items))
+	resp.Memory["bot"] = reflect.TypeOf(resp.Bots).Size()
+	for k, v := range items {
+		resp.Bots[k] = v.Object.(bool)
+		resp.Memory["bot"] += reflect.TypeOf(k).Size()
+		resp.Memory["bot"] += reflect.TypeOf(v).Size()
+		resp.Memory["bot"] += uintptr(len(k))
+	}
+
+	items = bc.verifiedCache.Items()
+	resp.Verified = make(map[string]bool, len(items))
+	resp.Memory["verified"] = reflect.TypeOf(resp.Verified).Size()
+	for k, v := range items {
+		resp.Verified[k] = v.Object.(bool)
+		resp.Memory["verified"] += reflect.TypeOf(k).Size()
+		resp.Memory["verified"] += reflect.TypeOf(v).Size()
+		resp.Memory["verified"] += uintptr(len(k))
+	}
+
+	jsonData, err := json.Marshal(resp)
+	if err != nil {
+		log.Errorf("failed to marshal JSON: %v", err)
+		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 
 	rw.WriteHeader(http.StatusOK)
+	rw.Header().Set("Content-Type", "application/json")
+	rw.Write(jsonData)
 }
 
 func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.Request, ip string) {
@@ -402,6 +436,10 @@ func (bc *CaptchaProtect) isGoodBot(req *http.Request, clientIP string) bool {
 }
 
 func IsIpGoodBot(clientIP string, goodBots []string) bool {
+	if len(goodBots) == 0 {
+		return false
+	}
+
 	// lookup the hostname for a given IP
 	hostname, err := lookupAddrFunc(clientIP)
 	if err != nil || len(hostname) == 0 {

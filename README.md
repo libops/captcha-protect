@@ -6,46 +6,37 @@ You may have seen captchas added to individual forms on the web to protect from 
 
 ## Config
 
-| JSON Key            | Type              | Default Value           | Description                                                                                                                                             |
-|---------------------|-------------------|-------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
-| captchaProvider     | string (required) | ""                      | The captcha type to use. Supported values are turnstile, hcaptcha, and recaptcha.                                                                       |
-| siteKey             | string (required) | ""                      | The captcha site key                                                                                                                                    |
-| secretKey           | string (required) | ""                      | The captcha secret key                                                                                                                                  |
-| rateLimit           | uint              | 20                      | How many requests are allowed from a subnet before individuals are challenged                                                                           |
-| window              | int               | 86400                   | How long requests for a given subnet are monitored (in seconds)                                                                                         |
-| ipv4subnetMask      | int               | 16                      | The CIDR subnet mask to group IPv4 requests into for the rate limiter                                                                                   |
-| ipv6subnetMask      | int               | 64                      | The CIDR subnet mask to group IPv6 requests into for the rate limiter                                                                                   |
-| ipForwardedHeader   | string            | ""                      | If traefik is behind a load balancer, where to look for the original client address                                                                     |
-| protectRoutes       | []string          | ["/"]                   | Routes that start with the string(s) in this list. e.g. "/" protects the whole site. "/browse" protects any URL that starts with that string.           |
-| goodBots            | []string          | see below               | List of second level domain names for bots that are never challened/rate limited. This it to keep your SEO score stable when this plugin is enabled     |
-| protectParameters   | string            | "false"                 | Do not allow even good bots to pass the rate limiter if the request has URL parameters. Meant to help protect faceted search pages.                     |
-| exemptIps           | []string          | privateIPs              | IP address(es) in CIDR format that should never be challenged                                                                                           |
-| challengeURL        | string            | "/challenge"            | The URL on the site to send challenges to. Will override any URL at that route                                                                          |
-| challengeTmpl       | string            | "./challenge.tmpl.html" | HTML go template file to serve the captcha challenge.                                                                                                   |
-| enableStatsPage     | string            | "false"                 | Allow 127.0.0.1 to access `/captcha-protect/stats` to see the status of the rate limiter                                                                |
-| logLevel            | string            | "INFO"                  | This middleware's log level. Possible values: ERROR, WARNING, INFO, or DEBUG                                                                            |
+| JSON Key            | Type                  | Default Value           | Description                                                                                                                                                        |
+|---------------------|-----------------------|-------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| protectRoutes       | []string (required)   | ""                      | Comma separated list of route prefixes to protect with this middleware. e.g. "/" protects the whole site. "/browse" protects any URL that starts with that string. |
+| captchaProvider     | string (required)     | ""                      | The captcha type to use. Supported values are turnstile, hcaptcha, and recaptcha.                                                                                  |
+| siteKey             | string (required)     | ""                      | The captcha site key                                                                                                                                               |
+| secretKey           | string (required)     | ""                      | The captcha secret key                                                                                                                                             |
+| rateLimit           | uint                  | 20                      | How many requests are allowed from a subnet before individuals are challenged                                                                                      |
+| window              | int                   | 86400                   | How long requests for a given subnet are monitored (in seconds)                                                                                                    |
+| ipv4subnetMask      | int                   | 16                      | The CIDR subnet mask to group IPv4 requests into for the rate limiter                                                                                              |
+| ipv6subnetMask      | int                   | 64                      | The CIDR subnet mask to group IPv6 requests into for the rate limiter                                                                                              |
+| ipForwardedHeader   | string                | ""                      | If traefik is behind a load balancer, where to look for the original client address                                                                                |
+| goodBots            | []string (encouraged) | see below               | Comma separated list of second level domain names for bots that are never challened/rate limited. See below                                                        |
+| protectParameters   | string                | "false"                 | Do not allow even good bots to pass the rate limiter if the request has URL parameters. Meant to help protect faceted search pages.                                |
+| exemptIps           | []string              | privateIPs              | IP address(es) in CIDR format that should never be challenged                                                                                                      |
+| challengeURL        | string                | "/challenge"            | The URL on the site to send challenges to. Will override any URL at that route                                                                                     |
+| challengeTmpl       | string                | "./challenge.tmpl.html" | HTML go template file to serve the captcha challenge.                                                                                                              |
+| enableStatsPage     | string                | "false"                 | Allow 127.0.0.1 to access `/captcha-protect/stats` to see the status of the rate limiter                                                                           |
+| logLevel            | string                | "INFO"                  | This middleware's log level. Possible values: ERROR, WARNING, INFO, or DEBUG                                                                                       |
 
 
 ### Good Bots
 
-The bots by default that are allowed to come through no matter their rate limit (unless `protectParameters="true"` and a URL has a GET parameter).
+To avoid having this middleware impact your SEO score, it's recommended to provide a value for `goodBots`. By default, no bots will be allowed to crawl your protected routes unless their second level domain (e.g. `google.com`) is configured as a good bot.
+
+A good default value for `goodBots` would be:
 
 ```
-duckduckgo.com
-kagibot.org
-googleusercontent.com
-google.com
-googlebot.com
-msn.com
-openalex.org
-archive.org
-linkedin.com
-facebook.com
-instagram.com
-twitter.com
-x.com
-apple.com
+goodBots: apple.com,archive.org,duckduckgo.com,facebook.com,google.com,googlebot.com,googleusercontent.com,instagram.com,kagibot.org,linkedin.com,msn.com,openalex.org,twitter.com,x.com
 ```
+
+**However** if you set the config parameter `protectParameters="true"`, even good bots won't be allowed to crawl protected routes if a URL parameter is on the request (e.g. `/foo?bar=baz`). This feature is meant to help protect faceted search pages.
 
 ## Similar projects
 
