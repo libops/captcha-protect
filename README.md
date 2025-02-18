@@ -47,3 +47,5 @@ goodBots: apple.com,archive.org,duckduckgo.com,facebook.com,google.com,googlebot
 
 - the original implementation of this logic was [a drupal module called turnstile_protect](https://www.drupal.org/project/turnstile_protect). This traefik plugin was made to make the challenge logic even more perfomant than that module
 - making general captcha structs to support multiple providers was based on the work in [crowdsec-bouncer-traefik-plugin](https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin)
+- in memory cache thanks to https://github.com/patrickmn/go-cache
+- easy traefik middleware logging thanks to [https://github.com/discoverygarden/traefik-ultimate-bad-bot-blocker](https://github.com/discoverygarden/traefik-ultimate-bad-bot-blocker/blob/main/utils/log.go)
