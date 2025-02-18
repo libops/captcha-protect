@@ -301,7 +301,16 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	}
 	if captchaResponse.Success {
 		bc.verifiedCache.Set(ip, true, lru.DefaultExpiration)
-		http.Redirect(rw, req, req.URL.Query().Get("destination"), http.StatusFound)
+		destination := req.URL.Query().Get("destination")
+		if destination == "" {
+			destination = "%2F"
+		}
+		u, err := url.QueryUnescape(destination)
+		if err != nil {
+			log.Errorf("Unable to unescape destination: %s: %v", destination, err)
+			u = "/"
+		}
+		http.Redirect(rw, req, u, http.StatusFound)
 		return
 	}
 
