@@ -165,7 +165,7 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	clientIP, ipRange := bc.getClientIP(req)
 	if req.URL.Path == bc.config.ChallengeURL {
 		if req.Method == http.MethodGet {
-			bc.serveChallengePage(rw)
+			bc.serveChallengePage(rw, req)
 		} else if req.Method == http.MethodPost {
 			bc.verifyChallengePage(rw, req, clientIP)
 		} else {
@@ -192,7 +192,7 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter) {
+func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, req *http.Request) {
 	tmpl, err := template.ParseFiles(bc.config.ChallengeTmpl)
 	if err != nil {
 		log.Errorf("Unable to parse go template %s: %v", bc.config.ChallengeTmpl, err)
@@ -205,6 +205,7 @@ func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter) {
 		"FrontendJS":   bc.captchaConfig.js,
 		"FrontendKey":  bc.captchaConfig.key,
 		"ChallengeURL": bc.config.ChallengeURL,
+		"Destination":  req.URL.Query().Get("destination"),
 	}
 	err = tmpl.Execute(rw, d)
 	if err != nil {
@@ -301,7 +302,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	}
 	if captchaResponse.Success {
 		bc.verifiedCache.Set(ip, true, lru.DefaultExpiration)
-		destination := req.URL.Query().Get("destination")
+		destination := req.FormValue("destination")
 		if destination == "" {
 			destination = "%2F"
 		}
