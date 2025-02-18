@@ -192,7 +192,7 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, req *http.Request)) {
+func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, req *http.Request) {
 	tmpl, err := template.ParseFiles(bc.config.ChallengeTmpl)
 	if err != nil {
 		log.Errorf("Unable to parse go template %s: %v", bc.config.ChallengeTmpl, err)
@@ -205,7 +205,7 @@ func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, req *http.R
 		"FrontendJS":   bc.captchaConfig.js,
 		"FrontendKey":  bc.captchaConfig.key,
 		"ChallengeURL": bc.config.ChallengeURL,
-		"Destination": req.URL.Query().Get("destination"),
+		"Destination":  req.URL.Query().Get("destination"),
 	}
 	err = tmpl.Execute(rw, d)
 	if err != nil {
