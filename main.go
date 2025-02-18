@@ -165,14 +165,17 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	clientIP, ipRange := bc.getClientIP(req)
 	if req.URL.Path == bc.config.ChallengeURL {
 		if req.Method == http.MethodGet {
+			log.Infof("%s %s %s %s", clientIP, req.Method, req.URL.Path, req.UserAgent())
 			bc.serveChallengePage(rw, req)
 		} else if req.Method == http.MethodPost {
-			bc.verifyChallengePage(rw, req, clientIP)
+			statusCode := bc.verifyChallengePage(rw, req, clientIP)
+			log.Infof("%s %s %s %d %s", clientIP, req.Method, req.URL.Path, statusCode, req.UserAgent())
 		} else {
 			http.Error(rw, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 		return
 	} else if req.URL.Path == "/captcha-protect/stats" && bc.config.EnableStatsPage == "true" {
+		log.Infof("%s %s %s %s", clientIP, req.Method, req.URL.Path, req.UserAgent())
 		bc.serveStatsPage(rw, clientIP)
 		return
 	}
@@ -275,11 +278,11 @@ func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
 
 }
 
-func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.Request, ip string) {
+func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.Request, ip string) int {
 	response := req.FormValue(bc.captchaConfig.key + "-response")
 	if response == "" {
 		http.Error(rw, "Bad request", http.StatusBadRequest)
-		return
+		return http.StatusBadRequest
 	}
 
 	var body = url.Values{}
@@ -289,7 +292,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	if err != nil {
 		log.Errorf("Unable to validate captcha %s: %v %v", bc.captchaConfig.validate, body, err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
-		return
+		return http.StatusInternalServerError
 	}
 	defer resp.Body.Close()
 
@@ -298,7 +301,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	if err != nil {
 		log.Errorf("Unable to unmarshal captcha response %s: %v", bc.captchaConfig.validate, err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
-		return
+		return http.StatusInternalServerError
 	}
 	if captchaResponse.Success {
 		bc.verifiedCache.Set(ip, true, lru.DefaultExpiration)
@@ -312,10 +315,12 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 			u = "/"
 		}
 		http.Redirect(rw, req, u, http.StatusFound)
-		return
+		return http.StatusFound
 	}
 
 	http.Error(rw, "Validation failed", http.StatusForbidden)
+
+	return http.StatusForbidden
 }
 
 func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
