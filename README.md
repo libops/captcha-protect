@@ -12,7 +12,7 @@ You may have seen CAPTCHAs added to individual forms on the web to prevent bots 
 
 Below is an example `docker-compose.yml` with traefik as the frontend, and nginx as the backend. nginx is using this middleware to protect the entire site (`protectRoutes: "/"`)
 
-Since the config values aren't specified, captcha-protect would use the default `rateLimit: 20` and `window: 86400` so any IPv4 in `X.Y.0.0/16` (or ipv6 in `/64`) could only access the site 20 times before individual IPs are required to pass a captcha to continue browsing.
+Since the config values aren't specified, captcha-protect would use the default `rateLimit: 20` and `window: 86400` so any IPv4 in `X.Y.0.0/16` (or ipv6 in `/64`) could only access the site 20 times before individual IPs in that subnet are required to pass a captcha to continue browsing.
 
 ```yaml
 networks:
