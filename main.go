@@ -80,9 +80,15 @@ func CreateConfig() *Config {
 		ProtectParameters: "false",
 		ProtectRoutes:     []string{},
 		GoodBots:          []string{},
-		ChallengeURL:      "/challenge",
-		EnableStatsPage:   "false",
-		LogLevel:          "INFO",
+		ExemptIPs: []string{
+			"10.0.0.0/8",
+			"172.16.0.0/12",
+			"192.168.0.0/16",
+			"fc00::/8",
+		},
+		ChallengeURL:    "/challenge",
+		EnableStatsPage: "false",
+		LogLevel:        "INFO",
 	}
 }
 
@@ -106,19 +112,9 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, fmt.Errorf("error check for template file %s: %v", config.ChallengeTmpl, err)
 	}
 
-	// always exempt local IPs
-	exemptIPs := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"fc00::/8",
-	}
-	// include IPs from config
-	exemptIPs = append(exemptIPs, config.ExemptIPs...)
-
-	// transform exempt IPs into what go can easily parse
+	// transform exempt IP strings into what go can easily parse (net.IPNet)
 	var ips []*net.IPNet
-	for _, ip := range exemptIPs {
+	for _, ip := range config.ExemptIPs {
 		parsedIp, err := ParseCIDR(ip)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing cidr %s: %v", ip, err)
@@ -269,7 +265,13 @@ func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
 
 	rw.WriteHeader(http.StatusOK)
 	rw.Header().Set("Content-Type", "application/json")
-	rw.Write(jsonData)
+	_, err = rw.Write(jsonData)
+	if err != nil {
+		log.Errorf("failed to write JSON on stats request: %v", err)
+		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
 }
 
 func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.Request, ip string) {

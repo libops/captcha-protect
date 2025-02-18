@@ -19,10 +19,10 @@ You may have seen captchas added to individual forms on the web to protect from 
 | ipForwardedHeader   | string                | ""                      | If traefik is behind a load balancer, where to look for the original client address                                                                                |
 | goodBots            | []string (encouraged) | see below               | Comma separated list of second level domain names for bots that are never challened/rate limited. See below                                                        |
 | protectParameters   | string                | "false"                 | Do not allow even good bots to pass the rate limiter if the request has URL parameters. Meant to help protect faceted search pages.                                |
-| exemptIps           | []string              | privateIPs              | IP address(es) in CIDR format that should never be challenged                                                                                                      |
+| exemptIps           | []string              | privateIPs              | IP address(es) in CIDR format that should never be challenged. Private IP ranges are always included                                                               |
 | challengeURL        | string                | "/challenge"            | The URL on the site to send challenges to. Will override any URL at that route                                                                                     |
 | challengeTmpl       | string                | "./challenge.tmpl.html" | HTML go template file to serve the captcha challenge.                                                                                                              |
-| enableStatsPage     | string                | "false"                 | Allow 127.0.0.1 to access `/captcha-protect/stats` to see the status of the rate limiter                                                                           |
+| enableStatsPage     | string                | "false"                 | Allow exemptIps to access `/captcha-protect/stats` to see the status of the rate limiter                                                                           |
 | logLevel            | string                | "INFO"                  | This middleware's log level. Possible values: ERROR, WARNING, INFO, or DEBUG                                                                                       |
 
 
