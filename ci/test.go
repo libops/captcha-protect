@@ -46,7 +46,6 @@ func main() {
 
 	fmt.Println("Bringing traefik/nginx online")
 	runCommand("docker", "compose", "up", "-d")
-
 	waitForService("http://localhost")
 
 	fmt.Printf("Making sure %d attempt(s) pass\n", rateLimit)
@@ -57,7 +56,7 @@ func main() {
 
 	fmt.Println("Sleeping for 3m")
 	time.Sleep(3 * time.Minute)
-	fmt.Printf("Making sure %d attempt(s) pass after 2m window\n", rateLimit)
+	fmt.Println("Making sure one attempt passes after 2m window")
 	runParallelChecks(ips, 1)
 
 	fmt.Println("All good 🚀")
@@ -68,9 +67,10 @@ func main() {
 func generateUniquePublicIPs(n int) []string {
 	ipSet := make(map[string]struct{})
 	var ips []string
+	config := cp.CreateConfig()
 
 	for len(ips) < n {
-		ip := randomPublicIP()
+		ip := randomPublicIP(config)
 		ip, ipRange := cp.ParseIp(ip, 16, 64)
 		if _, exists := ipSet[ipRange]; !exists {
 			ipSet[ipRange] = struct{}{}
@@ -81,8 +81,7 @@ func generateUniquePublicIPs(n int) []string {
 	return ips
 }
 
-func randomPublicIP() string {
-	config := cp.CreateConfig()
+func randomPublicIP(config *cp.Config) string {
 	for {
 		ip := fmt.Sprintf("%d.%d.%d.%d",
 			rand.Intn(255)+1,
