@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"math/rand"
@@ -62,6 +64,13 @@ func main() {
 	fmt.Println("All good 🚀")
 
 	runCommand("docker", "container", "stats", "--no-stream")
+	runCommand("docker", "compose", "down")
+	runCommand("docker", "compose", "up", "-d")
+	waitForService("http://localhost")
+	checkStateReload()
+
+	runCommand("rm", "tmp/state.json")
+
 }
 
 func generateUniquePublicIPs(n int) []string {
@@ -189,5 +198,35 @@ func runCommand(name string, args ...string) {
 	cmd.Env = append(cmd.Env, fmt.Sprintf("PATH=%s", os.Getenv("PATH")))
 	if err := cmd.Run(); err != nil {
 		log.Fatalf("Command failed: %v", err)
+	}
+}
+
+func checkStateReload() {
+	resp, err := http.Get("http://localhost/captcha-protect/stats")
+	if err != nil {
+		log.Fatalf("Failed to make GET request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalf("Failed to read response body: %v", err)
+	}
+	var jsonResponse map[string]interface{}
+	err = json.Unmarshal(body, &jsonResponse)
+	if err != nil {
+		log.Fatalf("Failed to unmarshal JSON: %v", err)
+	}
+	bots, exists := jsonResponse["bots"]
+	if !exists {
+		log.Fatalf("Key 'bots' not found in JSON response")
+	}
+	botsArray, ok := bots.([]interface{})
+	if !ok {
+		log.Fatalf("'bots' is not an array")
+	}
+
+	if len(botsArray) != numIPs {
+		log.Fatalf("Expected %d bots, but got %d", numIPs, len(botsArray))
 	}
 }

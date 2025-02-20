@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"reflect"
 	"strings"
 	"text/template"
 	"time"
 
+	"github.com/libops/captcha-protect/internal/state"
 	lru "github.com/patrickmn/go-cache"
 )
 
@@ -24,22 +24,23 @@ var (
 )
 
 type Config struct {
-	RateLimit         uint     `json:"rateLimit"`
-	Window            int64    `json:"window"`
-	IPv4SubnetMask    int      `json:"ipv4subnetMask"`
-	IPv6SubnetMask    int      `json:"ipv6subnetMask"`
-	IPForwardedHeader string   `json:"ipForwardedHeader"`
-	ProtectParameters string   `json:"protectParameters"`
-	ProtectRoutes     []string `json:"protectRoutes"`
-	GoodBots          []string `json:"goodBots"`
-	ExemptIPs         []string `json:"exemptIps"`
-	ChallengeURL      string   `json:"challengeURL"`
-	ChallengeTmpl     string   `json:"challengeTmpl"`
-	CaptchaProvider   string   `json:"captchaProvider"`
-	SiteKey           string   `json:"siteKey"`
-	SecretKey         string   `json:"secretKey"`
-	EnableStatsPage   string   `json:"enableStatsPage"`
-	LogLevel          string   `json:"loglevel,omitempty"`
+	RateLimit           uint     `json:"rateLimit"`
+	Window              int64    `json:"window"`
+	IPv4SubnetMask      int      `json:"ipv4subnetMask"`
+	IPv6SubnetMask      int      `json:"ipv6subnetMask"`
+	IPForwardedHeader   string   `json:"ipForwardedHeader"`
+	ProtectParameters   string   `json:"protectParameters"`
+	ProtectRoutes       []string `json:"protectRoutes"`
+	GoodBots            []string `json:"goodBots"`
+	ExemptIPs           []string `json:"exemptIps"`
+	ChallengeURL        string   `json:"challengeURL"`
+	ChallengeTmpl       string   `json:"challengeTmpl"`
+	CaptchaProvider     string   `json:"captchaProvider"`
+	SiteKey             string   `json:"siteKey"`
+	SecretKey           string   `json:"secretKey"`
+	EnableStatsPage     string   `json:"enableStatsPage"`
+	LogLevel            string   `json:"loglevel,omitempty"`
+	PersistentStateFile string   `json:"persistentStateFile"`
 }
 
 type CaptchaProtect struct {
@@ -61,13 +62,6 @@ type CaptchaConfig struct {
 
 type captchaResponse struct {
 	Success bool `json:"success"`
-}
-
-type statsResponse struct {
-	Rate     map[string]uint    `json:"rate"`
-	Bots     map[string]bool    `json:"bots"`
-	Verified map[string]bool    `json:"verified"`
-	Memory   map[string]uintptr `json:"memory"`
 }
 
 func CreateConfig() *Config {
@@ -165,6 +159,17 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, fmt.Errorf("invalid captcha provider: %s", config.CaptchaProvider)
 	}
 
+	if config.PersistentStateFile != "" {
+		bc.loadState()
+		childCtx, cancel := context.WithCancel(ctx)
+		go bc.saveState(childCtx)
+		go func() {
+			<-ctx.Done()
+			log.Info("Context canceled, calling child cancel...")
+			cancel()
+		}()
+	}
+
 	return &bc, nil
 }
 
@@ -226,65 +231,6 @@ func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, req *http.R
 	rw.WriteHeader(http.StatusOK)
 }
 
-func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
-	// only allow excluded IPs from viewing
-	if !IsIpExcluded(ip, bc.exemptIps) {
-		http.Error(rw, "Forbidden", http.StatusForbidden)
-		return
-	}
-
-	resp := statsResponse{
-		Memory: make(map[string]uintptr, 3),
-	}
-
-	items := bc.rateCache.Items()
-	resp.Rate = make(map[string]uint, len(items))
-	resp.Memory["rate"] = reflect.TypeOf(resp.Rate).Size()
-	for k, v := range items {
-		resp.Rate[k] = v.Object.(uint)
-		resp.Memory["rate"] += reflect.TypeOf(k).Size()
-		resp.Memory["rate"] += reflect.TypeOf(v).Size()
-		resp.Memory["rate"] += uintptr(len(k))
-	}
-
-	items = bc.botCache.Items()
-	resp.Bots = make(map[string]bool, len(items))
-	resp.Memory["bot"] = reflect.TypeOf(resp.Bots).Size()
-	for k, v := range items {
-		resp.Bots[k] = v.Object.(bool)
-		resp.Memory["bot"] += reflect.TypeOf(k).Size()
-		resp.Memory["bot"] += reflect.TypeOf(v).Size()
-		resp.Memory["bot"] += uintptr(len(k))
-	}
-
-	items = bc.verifiedCache.Items()
-	resp.Verified = make(map[string]bool, len(items))
-	resp.Memory["verified"] = reflect.TypeOf(resp.Verified).Size()
-	for k, v := range items {
-		resp.Verified[k] = v.Object.(bool)
-		resp.Memory["verified"] += reflect.TypeOf(k).Size()
-		resp.Memory["verified"] += reflect.TypeOf(v).Size()
-		resp.Memory["verified"] += uintptr(len(k))
-	}
-
-	jsonData, err := json.Marshal(resp)
-	if err != nil {
-		log.Error("failed to marshal JSON", "err", err)
-		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-
-	rw.WriteHeader(http.StatusOK)
-	rw.Header().Set("Content-Type", "application/json")
-	_, err = rw.Write(jsonData)
-	if err != nil {
-		log.Error("failed to write JSON on stats reques", "err", err)
-		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-
-}
-
 func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.Request, ip string) int {
 	response := req.FormValue(bc.captchaConfig.key + "-response")
 	if response == "" {
@@ -328,6 +274,32 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	http.Error(rw, "Validation failed", http.StatusForbidden)
 
 	return http.StatusForbidden
+}
+
+func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
+	// only allow excluded IPs from viewing
+	if !IsIpExcluded(ip, bc.exemptIps) {
+		http.Error(rw, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	state := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
+	jsonData, err := json.Marshal(state)
+	if err != nil {
+		log.Error("failed to marshal JSON", "err", err)
+		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	rw.WriteHeader(http.StatusOK)
+	rw.Header().Set("Content-Type", "application/json")
+	_, err = rw.Write(jsonData)
+	if err != nil {
+		log.Error("failed to write JSON on stats reques", "err", err)
+		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
 }
 
 func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
@@ -518,4 +490,66 @@ func ParseLogLevel(level string) (slog.Level, error) {
 	default:
 		return slog.LevelInfo, fmt.Errorf("unknown logl level %s", level)
 	}
+}
+
+func (bc *CaptchaProtect) saveState(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Error("Unable to save state. Could not open or create file", "stateFile", bc.config.PersistentStateFile, "err", err)
+		return
+	}
+	defer file.Close()
+
+	for {
+		select {
+		case <-ticker.C:
+			log.Debug("Saving state")
+			state := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
+			jsonData, err := json.Marshal(state)
+			if err != nil {
+				log.Error("failed unmarshalling state data", "err", err)
+				break
+			}
+			err = os.WriteFile(bc.config.PersistentStateFile, jsonData, 0644)
+			if err != nil {
+				log.Error("failed saving state data", "err", err)
+			}
+
+		case <-ctx.Done():
+			log.Debug("Context cancelled, stopping saveState")
+			return
+		}
+	}
+}
+
+func (bc *CaptchaProtect) loadState() {
+	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
+	if err != nil || len(fileContent) == 0 {
+		log.Warn("Failed to load state file.", "err", err)
+		return
+	}
+
+	var state state.State
+	err = json.Unmarshal(fileContent, &state)
+	if err != nil {
+		log.Error("Failed to unmarshal state file", "err", err)
+		return
+	}
+
+	for k, v := range state.Rate {
+		bc.rateCache.Set(k, v, lru.DefaultExpiration)
+	}
+
+	for k, v := range state.Bots {
+		bc.botCache.Set(k, v, lru.DefaultExpiration)
+	}
+
+	for k, v := range state.Verified {
+		bc.verifiedCache.Set(k, v, lru.DefaultExpiration)
+	}
+
+	log.Info("Loaded previous state")
 }

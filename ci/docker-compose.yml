@@ -21,6 +21,7 @@ services:
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.logLevel: "DEBUG"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.goodBots: ""
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectRoutes: "/"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.persistentStateFile: "/tmp/state.json"
         healthcheck:
             test: curl -fs http://localhost/healthz | grep -q OK || exit 1
         volumes:
@@ -43,6 +44,7 @@ services:
             --experimental.localPlugins.captcha-protect.moduleName=github.com/libops/captcha-protect
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
+            - ./tmp:/tmp:rw
             - ./../:/plugins-local/src/github.com/libops/captcha-protect:r
         ports:
             - "80:80"

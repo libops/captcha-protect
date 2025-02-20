@@ -80,8 +80,9 @@ services:
 | exemptIps           | []string              | privateIPs              | IP address(es) in CIDR format that should never be challenged. Private IP ranges are always included                                                               |
 | challengeURL        | string                | "/challenge"            | The URL on the site to send challenges to. Will override any URL at that route                                                                                     |
 | challengeTmpl       | string                | "./challenge.tmpl.html" | HTML go template file to serve the captcha challenge.                                                                                                              |
-| enableStatsPage     | string                | "false"                 | Allow `exemptIps` to access `/captcha-protect/stats` to see the status of the rate limiter                                                                           |
+| enableStatsPage     | string                | "false"                 | Allow `exemptIps` to access `/captcha-protect/stats` to see the status of the rate limiter                                                                         |
 | logLevel            | string                | "INFO"                  | This middleware's log level. Possible values: ERROR, WARNING, INFO, or DEBUG                                                                                       |
+| persistentStateFile | string                | ""                      | When traefik restarts, the rate limit is reset. You can save the state to a file and have it reload on restart. In docker, requires mounting a file from the host. |
 
 
 ### Good Bots
