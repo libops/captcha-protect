@@ -182,7 +182,7 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 		return
 	} else if req.URL.Path == "/captcha-protect/stats" && bc.config.EnableStatsPage == "true" {
-		log.Info("Captcha stats", clientIP, "method", req.Method, "path", req.URL.Path, "useragent", req.UserAgent())
+		log.Info("Captcha stats", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "useragent", req.UserAgent())
 		bc.serveStatsPage(rw, clientIP)
 		return
 	}
