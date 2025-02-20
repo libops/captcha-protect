@@ -221,12 +221,12 @@ func checkStateReload() {
 	if !exists {
 		log.Fatalf("Key 'bots' not found in JSON response")
 	}
-	botsArray, ok := bots.([]interface{})
+	botsMap, ok := bots.(map[string]interface{})
 	if !ok {
 		log.Fatalf("'bots' is not an array")
 	}
 
-	if len(botsArray) != numIPs {
-		log.Fatalf("Expected %d bots, but got %d", numIPs, len(botsArray))
+	if len(botsMap) != numIPs {
+		log.Fatalf("Expected %d bots, but got %d", numIPs, len(botsMap))
 	}
 }
