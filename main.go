@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -13,14 +14,13 @@ import (
 	"text/template"
 	"time"
 
-	log "github.com/discoverygarden/traefik-ultimate-bad-bot-blocker/utils"
-
 	lru "github.com/patrickmn/go-cache"
 )
 
 var (
 	lookupAddrFunc = net.LookupAddr
 	lookupIPFunc   = net.LookupIP
+	log            *slog.Logger
 )
 
 type Config struct {
@@ -93,14 +93,21 @@ func CreateConfig() *Config {
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	logLevel, err := log.ParseLevel(config.LogLevel)
+	var logLevel slog.LevelVar
+	logLevel.Set(slog.LevelInfo)
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: &logLevel,
+	})
+	log = slog.New(handler)
+
+	level, err := ParseLogLevel(config.LogLevel)
 	if err != nil {
-		return nil, fmt.Errorf("failed to set log level: %w", err)
+		log.Error("Unknown log level", "err", err)
 	}
-	log.Default().Level = logLevel
+	logLevel.Set(level)
 
 	expiration := time.Duration(config.Window) * time.Second
-	log.Debugf("config: %+v", config)
+	log.Debug("Captcha config", "config", config)
 
 	if len(config.ProtectRoutes) == 0 {
 		return nil, fmt.Errorf("you must protect at least one route with the protectRoutes config value. / will cover your entire site")
@@ -165,17 +172,17 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	clientIP, ipRange := bc.getClientIP(req)
 	if req.URL.Path == bc.config.ChallengeURL {
 		if req.Method == http.MethodGet {
-			log.Infof("%s %s %s %s", clientIP, req.Method, req.URL.Path, req.UserAgent())
+			log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "useragent", req.UserAgent())
 			bc.serveChallengePage(rw, req)
 		} else if req.Method == http.MethodPost {
 			statusCode := bc.verifyChallengePage(rw, req, clientIP)
-			log.Infof("%s %s %s %d %s", clientIP, req.Method, req.URL.Path, statusCode, req.UserAgent())
+			log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "status", statusCode, "useragent", req.UserAgent())
 		} else {
 			http.Error(rw, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 		return
 	} else if req.URL.Path == "/captcha-protect/stats" && bc.config.EnableStatsPage == "true" {
-		log.Infof("%s %s %s %s", clientIP, req.Method, req.URL.Path, req.UserAgent())
+		log.Info("Captcha stats", clientIP, "method", req.Method, "path", req.URL.Path, "useragent", req.UserAgent())
 		bc.serveStatsPage(rw, clientIP)
 		return
 	}
@@ -198,7 +205,7 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, req *http.Request) {
 	tmpl, err := template.ParseFiles(bc.config.ChallengeTmpl)
 	if err != nil {
-		log.Errorf("Unable to parse go template %s: %v", bc.config.ChallengeTmpl, err)
+		log.Error("Unable to parse go template", "tmpl", bc.config.ChallengeTmpl, "err", err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
 		return
 	}
@@ -212,7 +219,7 @@ func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, req *http.R
 	}
 	err = tmpl.Execute(rw, d)
 	if err != nil {
-		log.Errorf("Unable to execute go template %s: %v %v", bc.config.ChallengeTmpl, d, err)
+		log.Error("Unable to execute go template", "tmpl", bc.config.ChallengeTmpl, "err", err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
 		return
 	}
@@ -262,7 +269,7 @@ func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
 
 	jsonData, err := json.Marshal(resp)
 	if err != nil {
-		log.Errorf("failed to marshal JSON: %v", err)
+		log.Error("failed to marshal JSON", "err", err)
 		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -271,7 +278,7 @@ func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
 	rw.Header().Set("Content-Type", "application/json")
 	_, err = rw.Write(jsonData)
 	if err != nil {
-		log.Errorf("failed to write JSON on stats request: %v", err)
+		log.Error("failed to write JSON on stats reques", "err", err)
 		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -290,7 +297,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	body.Add("response", response)
 	resp, err := http.PostForm(bc.captchaConfig.validate, body)
 	if err != nil {
-		log.Errorf("Unable to validate captcha %s: %v %v", bc.captchaConfig.validate, body, err)
+		log.Error("Unable to validate captcha", "url", bc.captchaConfig.validate, "body", body, "err", err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
 		return http.StatusInternalServerError
 	}
@@ -299,7 +306,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	var captchaResponse captchaResponse
 	err = json.NewDecoder(resp.Body).Decode(&captchaResponse)
 	if err != nil {
-		log.Errorf("Unable to unmarshal captcha response %s: %v", bc.captchaConfig.validate, err)
+		log.Error("Unable to unmarshal captcha response", "url", bc.captchaConfig.validate, "err", err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
 		return http.StatusInternalServerError
 	}
@@ -311,7 +318,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 		}
 		u, err := url.QueryUnescape(destination)
 		if err != nil {
-			log.Errorf("Unable to unescape destination: %s: %v", destination, err)
+			log.Error("Unable to unescape destination", "destination", destination, "err", err)
 			u = "/"
 		}
 		http.Redirect(rw, req, u, http.StatusFound)
@@ -360,7 +367,7 @@ func IsIpExcluded(clientIP string, exemptIps []*net.IPNet) bool {
 func (bc *CaptchaProtect) trippedRateLimit(ip string) bool {
 	v, ok := bc.rateCache.Get(ip)
 	if !ok {
-		log.Errorf("IP not found, but should already be set: %s\n", ip)
+		log.Error("IP not found, but should already be set", "ip", ip)
 		return false
 	}
 	return v.(uint) > bc.config.RateLimit
@@ -374,7 +381,7 @@ func (bc *CaptchaProtect) registerRequest(ip string) {
 
 	_, err = bc.rateCache.IncrementUint(ip, uint(1))
 	if err != nil {
-		log.Errorf("Unable to set rate cache for %s", ip)
+		log.Error("Unable to set rate cache", "ip", ip)
 	}
 }
 
@@ -495,4 +502,20 @@ func ParseCIDR(cidr string) (*net.IPNet, error) {
 		return nil, err
 	}
 	return ipNet, nil
+}
+
+// Map string to slog.Level
+func ParseLogLevel(level string) (slog.Level, error) {
+	switch strings.ToUpper(level) {
+	case "DEBUG":
+		return slog.LevelDebug, nil
+	case "INFO":
+		return slog.LevelInfo, nil
+	case "WARNING", "WARN":
+		return slog.LevelWarn, nil
+	case "ERROR":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, fmt.Errorf("unknown logl level %s", level)
+	}
 }
