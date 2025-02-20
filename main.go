@@ -81,6 +81,7 @@ func CreateConfig() *Config {
 			"fc00::/8",
 		},
 		ChallengeURL:    "/challenge",
+		ChallengeTmpl:   "challenge.tmpl.html",
 		EnableStatsPage: "false",
 		LogLevel:        "INFO",
 	}
