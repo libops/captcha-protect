@@ -60,11 +60,12 @@ func main() {
 	time.Sleep(125 * time.Second)
 	fmt.Println("Making sure one attempt passes after 2m window")
 	runParallelChecks(ips, 1)
+	fmt.Println("All good 🚀")
 
 	// make sure the state has time to save
+	fmt.Println("Waiting for state to save")
+	runCommand("jq", ".", "tmp/state.json")
 	time.Sleep(80 * time.Second)
-
-	fmt.Println("All good 🚀")
 
 	runCommand("docker", "container", "stats", "--no-stream")
 
