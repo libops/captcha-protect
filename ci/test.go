@@ -56,7 +56,7 @@ func main() {
 	fmt.Printf("Making sure attempt #%d causes a redirect to the challenge page\n", rateLimit+1)
 	ensureRedirect(ips)
 
-	fmt.Println("Sleeping for 3m")
+	fmt.Println("Sleeping for 2m")
 	time.Sleep(125 * time.Second)
 	fmt.Println("Making sure one attempt passes after 2m window")
 	runParallelChecks(ips, 1)
@@ -66,6 +66,7 @@ func main() {
 	fmt.Println("Waiting for state to save")
 	runCommand("jq", ".", "tmp/state.json")
 	time.Sleep(80 * time.Second)
+	runCommand("jq", ".", "tmp/state.json")
 
 	runCommand("docker", "container", "stats", "--no-stream")
 
