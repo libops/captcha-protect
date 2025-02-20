@@ -501,7 +501,8 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 		log.Error("Unable to save state. Could not open or create file", "stateFile", bc.config.PersistentStateFile, "err", err)
 		return
 	}
-	defer file.Close()
+	// we made sure the file is writable, we can continue in our loop
+	file.Close()
 
 	for {
 		select {
