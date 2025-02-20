@@ -95,7 +95,7 @@ func CreateConfig() *Config {
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	var logLevel slog.LevelVar
 	logLevel.Set(slog.LevelInfo)
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: &logLevel,
 	})
 	log = slog.New(handler)
