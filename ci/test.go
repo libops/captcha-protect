@@ -64,9 +64,12 @@ func main() {
 	fmt.Println("All good 🚀")
 
 	runCommand("docker", "container", "stats", "--no-stream")
+
+	// now restart the containers and make sure the previous state reloaded
 	runCommand("docker", "compose", "down")
 	runCommand("docker", "compose", "up", "-d")
 	waitForService("http://localhost")
+	time.Sleep(10 * time.Second)
 	checkStateReload()
 
 	runCommand("rm", "tmp/state.json")
@@ -229,4 +232,6 @@ func checkStateReload() {
 	if len(botsMap) != numIPs {
 		log.Fatalf("Expected %d bots, but got %d", numIPs, len(botsMap))
 	}
+
+	log.Println("State reloaded successfully!")
 }

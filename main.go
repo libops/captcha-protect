@@ -165,7 +165,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		go bc.saveState(childCtx)
 		go func() {
 			<-ctx.Done()
-			log.Info("Context canceled, calling child cancel...")
+			log.Debug("Context canceled, calling child cancel...")
 			cancel()
 		}()
 	}
