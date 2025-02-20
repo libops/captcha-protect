@@ -125,13 +125,12 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}
 
 	bc := CaptchaProtect{
-		next:      next,
-		name:      name,
-		config:    config,
-		rateCache: lru.New(expiration, 1*time.Minute),
-		botCache:  lru.New(expiration, 1*time.Minute),
-		// allow good IPs to pass through for ten days
-		verifiedCache: lru.New(240*time.Hour, 1*time.Hour),
+		next:          next,
+		name:          name,
+		config:        config,
+		rateCache:     lru.New(expiration, 1*time.Minute),
+		botCache:      lru.New(expiration, 1*time.Hour),
+		verifiedCache: lru.New(expiration, 1*time.Hour),
 		exemptIps:     ips,
 	}
 
