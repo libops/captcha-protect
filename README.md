@@ -32,6 +32,7 @@ services:
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.siteKey: ${TURNSTILE_SITE_KEY}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.secretKey: ${TURNSTILE_SECRET_KEY}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.goodBots: apple.com,archive.org,duckduckgo.com,facebook.com,google.com,googlebot.com,googleusercontent.com,instagram.com,kagibot.org,linkedin.com,msn.com,openalex.org,twitter.com,x.com
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.persistentStateFile: /tmp/state.json
         networks:
             default:
                 aliases:
@@ -50,6 +51,7 @@ services:
             --experimental.plugins.captcha-protect.version=v1.0.0
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
+            - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
         ports:
             - "80:80"
         networks:
@@ -80,8 +82,9 @@ services:
 | exemptIps           | []string              | privateIPs              | IP address(es) in CIDR format that should never be challenged. Private IP ranges are always included                                                               |
 | challengeURL        | string                | "/challenge"            | The URL on the site to send challenges to. Will override any URL at that route                                                                                     |
 | challengeTmpl       | string                | "./challenge.tmpl.html" | HTML go template file to serve the captcha challenge.                                                                                                              |
-| enableStatsPage     | string                | "false"                 | Allow `exemptIps` to access `/captcha-protect/stats` to see the status of the rate limiter                                                                           |
+| enableStatsPage     | string                | "false"                 | Allow `exemptIps` to access `/captcha-protect/stats` to see the status of the rate limiter                                                                         |
 | logLevel            | string                | "INFO"                  | This middleware's log level. Possible values: ERROR, WARNING, INFO, or DEBUG                                                                                       |
+| persistentStateFile | string                | ""                      | When traefik restarts, the rate limit is reset. You can save the state to a file and have it reload on restart. In docker, requires mounting a file from the host. |
 
 
 ### Good Bots

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"math/rand"
@@ -54,14 +56,29 @@ func main() {
 	fmt.Printf("Making sure attempt #%d causes a redirect to the challenge page\n", rateLimit+1)
 	ensureRedirect(ips)
 
-	fmt.Println("Sleeping for 3m")
-	time.Sleep(3 * time.Minute)
+	fmt.Println("Sleeping for 2m")
+	time.Sleep(125 * time.Second)
 	fmt.Println("Making sure one attempt passes after 2m window")
 	runParallelChecks(ips, 1)
-
 	fmt.Println("All good 🚀")
 
+	// make sure the state has time to save
+	fmt.Println("Waiting for state to save")
+	runCommand("jq", ".", "tmp/state.json")
+	time.Sleep(80 * time.Second)
+	runCommand("jq", ".", "tmp/state.json")
+
 	runCommand("docker", "container", "stats", "--no-stream")
+
+	// now restart the containers and make sure the previous state reloaded
+	runCommand("docker", "compose", "down")
+	runCommand("docker", "compose", "up", "-d")
+	waitForService("http://localhost")
+	time.Sleep(10 * time.Second)
+	checkStateReload()
+
+	runCommand("rm", "tmp/state.json")
+
 }
 
 func generateUniquePublicIPs(n int) []string {
@@ -190,4 +207,36 @@ func runCommand(name string, args ...string) {
 	if err := cmd.Run(); err != nil {
 		log.Fatalf("Command failed: %v", err)
 	}
+}
+
+func checkStateReload() {
+	resp, err := http.Get("http://localhost/captcha-protect/stats")
+	if err != nil {
+		log.Fatalf("Failed to make GET request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalf("Failed to read response body: %v", err)
+	}
+	var jsonResponse map[string]interface{}
+	err = json.Unmarshal(body, &jsonResponse)
+	if err != nil {
+		log.Fatalf("Failed to unmarshal JSON: %v", err)
+	}
+	bots, exists := jsonResponse["bots"]
+	if !exists {
+		log.Fatalf("Key 'bots' not found in JSON response")
+	}
+	botsMap, ok := bots.(map[string]interface{})
+	if !ok {
+		log.Fatalf("'bots' is not an array")
+	}
+
+	if len(botsMap) != numIPs {
+		log.Fatalf("Expected %d bots, but got %d", numIPs, len(botsMap))
+	}
+
+	log.Println("State reloaded successfully!")
 }
