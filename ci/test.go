@@ -57,9 +57,12 @@ func main() {
 	ensureRedirect(ips)
 
 	fmt.Println("Sleeping for 3m")
-	time.Sleep(3 * time.Minute)
+	time.Sleep(125 * time.Second)
 	fmt.Println("Making sure one attempt passes after 2m window")
 	runParallelChecks(ips, 1)
+
+	// make sure the state has time to save
+	time.Sleep(80 * time.Second)
 
 	fmt.Println("All good 🚀")
 
