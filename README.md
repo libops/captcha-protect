@@ -6,11 +6,33 @@ Traefik middleware to challenge individual IPs in a subnet when traffic spikes a
 
 You may have seen CAPTCHAs added to individual forms on the web to prevent bots from spamming submissions. This plugin extends that concept to your entire site (or specific routes on your site), effectively placing your entire site behind a CAPTCHA. However, the CAPTCHA is only triggered when a spike in traffic is detected from the same IP subnet. Once the CAPTCHA is successfully completed, that IP is no longer challenged, allowing uninterrupted browsing.
 
+The basic logic looks like
+
+```mermaid
+flowchart TD
+    Client(Client accesses path on website) --> IP{Has client passed captcha challenge in the last 24h?}
+    IP -- Yes --> Continue(Go to original destination)
+    IP -- No --> IP_BYPASS{Is client IP excluded by captcha-protect config?}
+    IP_BYPASS -- Yes --> Continue(Go to original destination)
+    IP_BYPASS -- No --> GOOD_BOT{Is client IP hostname in allowed bot list?}
+    GOOD_BOT -- No --> PROTECTED_ROUTE{Is this route protected?}
+    GOOD_BOT -- Yes --> CANONICAL_URL_BOT{Are there URL parameters?}
+    CANONICAL_URL_BOT -- Yes --> PROTECTED_ROUTE{Is this route prefix in protectRoutes?}
+    CANONICAL_URL_BOT -- No --> Continue(Go to original destination)
+    PROTECTED_ROUTE -- Yes --> RATE_LIMIT{Is this IP in a range seeing increased traffic?}
+    PROTECTED_ROUTE -- No --> Continue(Go to original destination)
+    RATE_LIMIT -- Yes --> REDIRECT(Redirect to /challenge)
+    RATE_LIMIT -- No --> Continue(Go to original destination)
+    REDIRECT --> CHALLENGE{turnstile/recaptcha/hcaptcha challenge}
+    CHALLENGE -- Pass --> Continue(Go to original destination)
+    CHALLENGE -- Fail --> Stuck
+```
+
 ## Config
 
 ### Example
 
-Below is an example `docker-compose.yml` with traefik as the frontend, and nginx as the backend. nginx is using this middleware to protect the entire site (`protectRoutes: "/"`)
+Below is an example `docker-compose.yml` with traefik as the frontend, and nginx as the backend. nginx is using this middleware to protect routes on the site that start with `SHOULD`, `CHANGE`, or `ME` (`protectRoutes: "/SHOULD,/CHANGE,/ME"`)
 
 Since the config values aren't specified, captcha-protect would use the default `rateLimit: 20` and `window: 86400` so any IPv4 in `X.Y.0.0/16` (or ipv6 in `/64`) could only access the site 20 times before individual IPs in that subnet are required to pass a captcha to continue browsing.
 
@@ -27,7 +49,7 @@ services:
             traefik.http.routers.nginx.rule: Host(`${DOMAIN}`)
             traefik.http.services.nginx.loadbalancer.server.port: 80
             traefik.http.routers.nginx.middlewares: captcha-protect@docker
-            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectRoutes: "/"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectRoutes: "/SHOULD,/CHANGE,/ME"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.captchaProvider: turnstile
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.siteKey: ${TURNSTILE_SITE_KEY}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.secretKey: ${TURNSTILE_SECRET_KEY}
