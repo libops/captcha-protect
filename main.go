@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/template"
 	"time"
@@ -24,23 +25,24 @@ var (
 )
 
 type Config struct {
-	RateLimit           uint     `json:"rateLimit"`
-	Window              int64    `json:"window"`
-	IPv4SubnetMask      int      `json:"ipv4subnetMask"`
-	IPv6SubnetMask      int      `json:"ipv6subnetMask"`
-	IPForwardedHeader   string   `json:"ipForwardedHeader"`
-	ProtectParameters   string   `json:"protectParameters"`
-	ProtectRoutes       []string `json:"protectRoutes"`
-	GoodBots            []string `json:"goodBots"`
-	ExemptIPs           []string `json:"exemptIps"`
-	ChallengeURL        string   `json:"challengeURL"`
-	ChallengeTmpl       string   `json:"challengeTmpl"`
-	CaptchaProvider     string   `json:"captchaProvider"`
-	SiteKey             string   `json:"siteKey"`
-	SecretKey           string   `json:"secretKey"`
-	EnableStatsPage     string   `json:"enableStatsPage"`
-	LogLevel            string   `json:"loglevel,omitempty"`
-	PersistentStateFile string   `json:"persistentStateFile"`
+	RateLimit             uint     `json:"rateLimit"`
+	Window                int64    `json:"window"`
+	IPv4SubnetMask        int      `json:"ipv4subnetMask"`
+	IPv6SubnetMask        int      `json:"ipv6subnetMask"`
+	IPForwardedHeader     string   `json:"ipForwardedHeader"`
+	ProtectParameters     string   `json:"protectParameters"`
+	ProtectRoutes         []string `json:"protectRoutes"`
+	ProtectFileExtensions []string `json:"protectFileExtensions"`
+	GoodBots              []string `json:"goodBots"`
+	ExemptIPs             []string `json:"exemptIps"`
+	ChallengeURL          string   `json:"challengeURL"`
+	ChallengeTmpl         string   `json:"challengeTmpl"`
+	CaptchaProvider       string   `json:"captchaProvider"`
+	SiteKey               string   `json:"siteKey"`
+	SecretKey             string   `json:"secretKey"`
+	EnableStatsPage       string   `json:"enableStatsPage"`
+	LogLevel              string   `json:"loglevel,omitempty"`
+	PersistentStateFile   string   `json:"persistentStateFile"`
 }
 
 type CaptchaProtect struct {
@@ -73,7 +75,10 @@ func CreateConfig() *Config {
 		IPForwardedHeader: "",
 		ProtectParameters: "false",
 		ProtectRoutes:     []string{},
-		GoodBots:          []string{},
+		ProtectFileExtensions: []string{
+			"html",
+		},
+		GoodBots: []string{},
 		ExemptIPs: []string{
 			"10.0.0.0/8",
 			"172.16.0.0/12",
@@ -316,8 +321,28 @@ func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
 		return false
 	}
 
+	return bc.RouteIsProtected(req.URL.Path)
+}
+
+func (bc *CaptchaProtect) RouteIsProtected(path string) bool {
 	for _, route := range bc.config.ProtectRoutes {
-		if strings.HasPrefix(req.URL.Path, route) {
+		if strings.HasPrefix(path, route) {
+			ext := filepath.Ext(path)
+			ext = strings.TrimPrefix(ext, ".")
+			if ext == "" {
+				return true
+			}
+
+			skip := true
+			for _, protectedExtensions := range bc.config.ProtectFileExtensions {
+				if strings.EqualFold(ext, protectedExtensions) {
+					skip = false
+				}
+			}
+			if skip {
+				continue
+			}
+
 			return true
 		}
 	}

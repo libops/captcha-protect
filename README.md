@@ -32,7 +32,7 @@ flowchart TD
 
 ### Example
 
-Below is an example `docker-compose.yml` with traefik as the frontend, and nginx as the backend. nginx is using this middleware to protect routes on the site that start with `SHOULD`, `CHANGE`, or `ME` (`protectRoutes: "/SHOULD,/CHANGE,/ME"`)
+Below is an example `docker-compose.yml` with traefik as the frontend, and nginx as the backend. nginx is using this middleware to protect routes on the site that start with `/` (`protectRoutes: "/"`)
 
 Since the config values aren't specified, captcha-protect would use the default `rateLimit: 20` and `window: 86400` so any IPv4 in `X.Y.0.0/16` (or ipv6 in `/64`) could only access the site 20 times before individual IPs in that subnet are required to pass a captcha to continue browsing.
 
@@ -49,7 +49,7 @@ services:
             traefik.http.routers.nginx.rule: Host(`${DOMAIN}`)
             traefik.http.services.nginx.loadbalancer.server.port: 80
             traefik.http.routers.nginx.middlewares: captcha-protect@docker
-            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectRoutes: "/SHOULD,/CHANGE,/ME"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectRoutes: "/"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.captchaProvider: turnstile
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.siteKey: ${TURNSTILE_SITE_KEY}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.secretKey: ${TURNSTILE_SECRET_KEY}
@@ -70,7 +70,7 @@ services:
             --providers.docker=true
             --providers.docker.network=default
             --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
-            --experimental.plugins.captcha-protect.version=v1.1.2
+            --experimental.plugins.captcha-protect.version=v1.2.0
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
@@ -88,25 +88,26 @@ services:
 ```
 ### Config options
 
-| JSON Key            | Type                  | Default Value           | Description                                                                                                                                                                                                                    |
-|---------------------|-----------------------|-------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| protectRoutes       | []string (required)   | ""                      | Comma separated list of route prefixes to protect with this middleware. e.g. "/" protects the whole site (even file/js/css downloads, which you probably don't want). "/browse" protects any URL that starts with that string. |
-| captchaProvider     | string (required)     | ""                      | The captcha type to use. Supported values are turnstile, hcaptcha, and recaptcha.                                                                                                                                              |
-| siteKey             | string (required)     | ""                      | The captcha site key                                                                                                                                                                                                           |
-| secretKey           | string (required)     | ""                      | The captcha secret key                                                                                                                                                                                                         |
-| rateLimit           | uint                  | 20                      | How many requests are allowed from a subnet before individuals are challenged                                                                                                                                                  |
-| window              | int                   | 86400                   | How long requests for a given subnet are monitored (in seconds)                                                                                                                                                                |
-| ipv4subnetMask      | int                   | 16                      | The CIDR subnet mask to group IPv4 requests into for the rate limiter                                                                                                                                                          |
-| ipv6subnetMask      | int                   | 64                      | The CIDR subnet mask to group IPv6 requests into for the rate limiter                                                                                                                                                          |
-| ipForwardedHeader   | string                | ""                      | If traefik is behind a load balancer, where to look for the original client address                                                                                                                                            |
-| goodBots            | []string (encouraged) | see below               | Comma separated list of second level domain names for bots that are never challened/rate limited. See below                                                                                                                    |
-| protectParameters   | string                | "false"                 | Do not allow even good bots to pass the rate limiter if the request has URL parameters. Meant to help protect faceted search pages.                                                                                            |
-| exemptIps           | []string              | privateIPs              | IP address(es) in CIDR format that should never be challenged. Private IP ranges are always included                                                                                                                           |
-| challengeURL        | string                | "/challenge"            | The URL on the site to send challenges to. Will override any URL at that route                                                                                                                                                 |
-| challengeTmpl       | string                | "./challenge.tmpl.html" | HTML go template file to serve the captcha challenge.                                                                                                                                                                          |
-| enableStatsPage     | string                | "false"                 | Allow `exemptIps` to access `/captcha-protect/stats` to see the status of the rate limiter                                                                                                                                     |
-| logLevel            | string                | "INFO"                  | This middleware's log level. Possible values: ERROR, WARNING, INFO, or DEBUG                                                                                                                                                   |
-| persistentStateFile | string                | ""                      | When traefik restarts, the rate limit is reset. You can save the state to a file and have it reload on restart. In docker, requires mounting a file from the host.                                                             |
+| **Parameter**           | **Type (Required)**     | **Default**             | **Description**                                                                                                                                                                           |
+|-------------------------|-------------------------|-------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `protectRoutes`         | `[]string` (required)   | `""`                    | Comma-separated list of route prefixes to protect. e.g., `"/"` protects the entire site (including file/js/css downloads, which you likely don't want). `"/browse"` protects its subtree. |
+| `captchaProvider`       | `string` (required)     | `""`                    | The captcha type to use. Supported values: `turnstile`, `hcaptcha`, and `recaptcha`.                                                                                                      |
+| `siteKey`               | `string` (required)     | `""`                    | The captcha site key.                                                                                                                                                                     |
+| `secretKey`             | `string` (required)     | `""`                    | The captcha secret key.                                                                                                                                                                   |
+| `rateLimit`             | `uint`                  | `20`                     | Maximum requests allowed from a subnet before a challenge is triggered.                                                                                                                  |
+| `window`                | `int`                   | `86400`                 | Duration (in seconds) for monitoring requests per subnet.                                                                                                                                 |
+| `ipv4subnetMask`        | `int`                   | `16`                    | CIDR subnet mask to group IPv4 addresses for rate limiting.                                                                                                                               |
+| `ipv6subnetMask`        | `int`                   | `64`                    | CIDR subnet mask to group IPv6 addresses for rate limiting.                                                                                                                               |
+| `ipForwardedHeader`     | `string`                | `""`                    | Header to check for the original client IP if Traefik is behind a load balancer.                                                                                                          |
+| `goodBots`              | `[]string` (encouraged) | *see below*             | List of second-level domains for bots that are never challenged or rate-limited.                                                                                                          |
+| `protectParameters`     | `string`                | `"false"`               | Forces rate limiting even for good bots if URL parameters are present. Useful for protecting faceted search pages.                                                                        |
+| `protectFileExtensions` | `[]string`              | `""`                    | Comma-separated file extensions to protect. By default, your protected routes only protect html files. This is to prevent files like CSS/JS/img from tripping the rate limit.             |
+| `exemptIps`             | `[]string`              | `privateIPs`            | CIDR-formatted IPs that should never be challenged. Private IP ranges are always exempt.                                                                                                  |
+| `challengeURL`          | `string`                | `"/challenge"`          | URL where challenges are served. This will override existing routes if there is a conflict.                                                                                               |
+| `challengeTmpl`         | `string`                | `"./challenge.tmpl.html"`| Path to the Go HTML template for the captcha challenge page.                                                                                                                             |
+| `enableStatsPage`       | `string`                | `"false"`               | Allows `exemptIps` to access `/captcha-protect/stats` to monitor the rate limiter.                                                                                                        |
+| `logLevel`              | `string`                | `"INFO"`                | Log level for the middleware. Options: `ERROR`, `WARNING`, `INFO`, or `DEBUG`.                                                                                                            |
+| `persistentStateFile`   | `string`                | `""`                    | File path to persist rate limiter state across Traefik restarts. In Docker, mount this file from the host.                                                                                |
 
 
 ### Good Bots
