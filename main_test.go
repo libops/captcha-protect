@@ -137,7 +137,6 @@ func TestParseIp(t *testing.T) {
 			name:       "IPv4 /8",
 			ip:         "192.168.1.1",
 			ipv4Mask:   8,
-			ipv6Mask:   64, // unused for IPv4
 			wantFull:   "192.168.1.1",
 			wantSubnet: "192",
 		},
@@ -145,7 +144,6 @@ func TestParseIp(t *testing.T) {
 			name:       "IPv4 /16",
 			ip:         "192.168.1.1",
 			ipv4Mask:   16,
-			ipv6Mask:   64, // unused for IPv4
 			wantFull:   "192.168.1.1",
 			wantSubnet: "192.168",
 		},
@@ -153,7 +151,6 @@ func TestParseIp(t *testing.T) {
 			name:       "IPv4 /24",
 			ip:         "192.168.1.1",
 			ipv4Mask:   24,
-			ipv6Mask:   64, // unused for IPv4
 			wantFull:   "192.168.1.1",
 			wantSubnet: "192.168.1",
 		},
@@ -161,14 +158,12 @@ func TestParseIp(t *testing.T) {
 			name:       "IPv4 unrecognized mask falls back to /16",
 			ip:         "192.168.1.1",
 			ipv4Mask:   32, // not one of the allowed values; fallback in our implementation is /16.
-			ipv6Mask:   64,
 			wantFull:   "192.168.1.1",
 			wantSubnet: "192.168",
 		},
 		{
 			name:     "IPv6 /64",
 			ip:       "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
-			ipv4Mask: 16, // unused for IPv6
 			ipv6Mask: 64,
 			wantFull: "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
 			// for /64, we keep 4 hextets
@@ -177,7 +172,6 @@ func TestParseIp(t *testing.T) {
 		{
 			name:     "IPv6 /48",
 			ip:       "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
-			ipv4Mask: 16, // unused for IPv6
 			ipv6Mask: 48,
 			wantFull: "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
 			// for /48, we keep 3 hextets
@@ -201,6 +195,104 @@ func TestParseIp(t *testing.T) {
 			}
 			if gotSubnet != tc.wantSubnet {
 				t.Errorf("ParseIp(%q, %d, %d) got subnet = %q, want %q", tc.ip, tc.ipv4Mask, tc.ipv6Mask, gotSubnet, tc.wantSubnet)
+			}
+		})
+	}
+}
+
+func TestRouteIsProtected(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   Config
+		path     string
+		expected bool
+	}{
+		{
+			name: "Protected route - exact match",
+			config: Config{
+				ProtectRoutes:         []string{"/"},
+				ProtectFileExtensions: []string{},
+			},
+			path:     "/foo",
+			expected: true,
+		},
+		{
+			name: "Unprotected route",
+			config: Config{
+				ProtectRoutes:         []string{"/foo"},
+				ProtectFileExtensions: []string{},
+			},
+			path:     "/bar",
+			expected: false,
+		},
+		{
+			name: "Protected route with included file extension",
+			config: Config{
+				ProtectRoutes:         []string{"/foo"},
+				ProtectFileExtensions: []string{"css", "js"},
+			},
+			path:     "/foo/bar/style.css",
+			expected: true,
+		},
+		{
+			name: "json always protected",
+			config: Config{
+				ProtectRoutes:         []string{"/"},
+				ProtectFileExtensions: []string{"css", "js"},
+			},
+			path:     "/foo/data.json",
+			expected: true,
+		},
+		{
+			name: "html always protected",
+			config: Config{
+				ProtectRoutes:         []string{"/"},
+				ProtectFileExtensions: []string{"css", "js"},
+			},
+			path:     "/foo/bar/data.html",
+			expected: true,
+		},
+		{
+			name: "subpath route protection",
+			config: Config{
+				ProtectRoutes:         []string{"/foo"},
+				ProtectFileExtensions: []string{},
+			},
+			path:     "/foo/any/route",
+			expected: true,
+		},
+		{
+			name: "No routes protected",
+			config: Config{
+				ProtectRoutes:         []string{},
+				ProtectFileExtensions: []string{},
+			},
+			path:     "/any/route",
+			expected: false,
+		},
+		{
+			name: "File extension in unprotected route",
+			config: Config{
+				ProtectRoutes:         []string{"/protected"},
+				ProtectFileExtensions: []string{"css", "js"},
+			},
+			path:     "/unprotected/script.js",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := CreateConfig()
+			c.ProtectRoutes = append(c.ProtectRoutes, tt.config.ProtectRoutes...)
+			c.ProtectFileExtensions = append(c.ProtectFileExtensions, tt.config.ProtectFileExtensions...)
+			bc := &CaptchaProtect{
+				config: c,
+			}
+
+			result := bc.RouteIsProtected(tt.path)
+			if result != tt.expected {
+				t.Errorf("RouteIsProtected(%q) = %v; want %v", tt.path, result, tt.expected)
 			}
 		})
 	}
