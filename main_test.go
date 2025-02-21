@@ -305,15 +305,6 @@ func TestRouteIsProtected(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "json always protected",
-			config: Config{
-				ProtectRoutes:         []string{"/"},
-				ProtectFileExtensions: []string{"css", "js"},
-			},
-			path:     "/foo/data.json",
-			expected: true,
-		},
-		{
 			name: "html always protected",
 			config: Config{
 				ProtectRoutes:         []string{"/"},

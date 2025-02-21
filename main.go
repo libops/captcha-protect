@@ -77,7 +77,6 @@ func CreateConfig() *Config {
 		ProtectRoutes:     []string{},
 		ProtectFileExtensions: []string{
 			"html",
-			"json",
 		},
 		GoodBots: []string{},
 		ExemptIPs: []string{
