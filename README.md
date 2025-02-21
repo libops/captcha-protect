@@ -122,6 +122,35 @@ goodBots: apple.com,archive.org,duckduckgo.com,facebook.com,google.com,googlebot
 
 **However** if you set the config parameter `protectParameters="true"`, even good bots won't be allowed to crawl protected routes if a URL parameter is on the request (e.g. `/foo?bar=baz`). This `protectParameters` feature is meant to help protect faceted search pages.
 
+
+## Overriding the challenge template file
+
+You probably will want to theme the CAPTCHA challenge page to match the style of your site.
+
+You can do that by copying the [challenge.tmpl.html](./challenge.tmpl.html) file in this repo into your docker compose project, mounting it into your traefik container
+
+```yaml
+    traefik:
+        volumes:
+            - ./host/path/to/challenge.tmpl.html:/challenge.tmpl.html:ro
+```
+
+and pointing the middleware to your overridden template with
+
+```yaml
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.challengeTmpl: "/challenge.tmpl.html"
+```
+
+When you override the challenge template, the process probably looks like:
+
+1. Copying some html file from your existing site (so the challenge looks like the rest of your site)
+2. Replacing some `<div>` in the HTML body for the file copied in step 1 with the `<form>...</form><script>...</script>` HTML tags/contents in this repo's default [challenge.tmpl.html](./challenge.tmpl.html). You must copy the `form` and `script` tags exactly as they are in the original challenge template. They use go's templating language to inject the proper site key and other variables into the HTML response when a challenge is presented
+3. You must also be sure to have this in the `<head>` of your overridden template:
+
+```
+    <script src="{{ .FrontendJS }}" async defer referrerpolicy="no-referrer"></script>
+```
+
 ## Similar projects
 
 - [Traefik RateLimit middleware](https://doc.traefik.io/traefik/middlewares/http/ratelimit/) - the core traefik ratelimit middleware will start sending 429 responses based on individual IPs, which might not be good enough to protect against traffic coming from distributed networks.
