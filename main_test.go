@@ -200,6 +200,76 @@ func TestParseIp(t *testing.T) {
 	}
 }
 
+func TestIsIpExcluded(t *testing.T) {
+	// Helper function to parse CIDR blocks
+	parseCIDR := func(cidr string) *net.IPNet {
+		_, block, err := net.ParseCIDR(cidr)
+		if err != nil {
+			t.Fatalf("Failed to parse CIDR %s: %v", cidr, err)
+		}
+		return block
+	}
+
+	tests := []struct {
+		name      string
+		clientIP  string
+		exemptIps []*net.IPNet
+		expected  bool
+	}{
+		{
+			name:      "IP in exempt subnet",
+			clientIP:  "192.168.1.5",
+			exemptIps: []*net.IPNet{parseCIDR("192.168.1.0/24")},
+			expected:  true,
+		},
+		{
+			name:      "IP not in exempt subnet",
+			clientIP:  "192.168.2.5",
+			exemptIps: []*net.IPNet{parseCIDR("192.168.1.0/24")},
+			expected:  false,
+		},
+		{
+			name:      "Multiple exempt subnets, matching one",
+			clientIP:  "10.0.0.15",
+			exemptIps: []*net.IPNet{parseCIDR("192.168.1.0/24"), parseCIDR("10.0.0.0/16")},
+			expected:  true,
+		},
+		{
+			name:      "IPv6 address in exempt range",
+			clientIP:  "2001:db8::1",
+			exemptIps: []*net.IPNet{parseCIDR("2001:db8::/32")},
+			expected:  true,
+		},
+		{
+			name:      "IPv6 address not in exempt range",
+			clientIP:  "2001:db9::1",
+			exemptIps: []*net.IPNet{parseCIDR("2001:db8::/32")},
+			expected:  false,
+		},
+		{
+			name:      "Invalid IP address",
+			clientIP:  "invalid-ip",
+			exemptIps: []*net.IPNet{parseCIDR("192.168.1.0/24")},
+			expected:  false,
+		},
+		{
+			name:      "No exempt IPs",
+			clientIP:  "192.168.1.5",
+			exemptIps: []*net.IPNet{},
+			expected:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsIpExcluded(tt.clientIP, tt.exemptIps)
+			if result != tt.expected {
+				t.Errorf("IsIpExcluded(%q) = %v; want %v", tt.clientIP, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestRouteIsProtected(t *testing.T) {
 	tests := []struct {
 		name     string
