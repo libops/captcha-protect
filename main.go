@@ -54,6 +54,7 @@ type CaptchaProtect struct {
 	botCache      *lru.Cache
 	captchaConfig CaptchaConfig
 	exemptIps     []*net.IPNet
+	tmpl          *template.Template
 }
 
 type CaptchaConfig struct {
@@ -113,10 +114,21 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		return nil, fmt.Errorf("you must protect at least one route with the protectRoutes config value. / will cover your entire site")
 	}
 
+	var tmpl *template.Template
 	if _, err := os.Stat(config.ChallengeTmpl); os.IsNotExist(err) {
-		return nil, fmt.Errorf("template file does not exist: %s", config.ChallengeTmpl)
+		log.Warn("Unable to find template file. Using default template.", "challengeTmpl", config.ChallengeTmpl)
+		ts := getDefaultTmpl()
+		tmpl, err = template.New("challenge").Parse(ts)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse challenge template: %v", err)
+		}
 	} else if err != nil {
-		return nil, fmt.Errorf("error check for template file %s: %v", config.ChallengeTmpl, err)
+		return nil, fmt.Errorf("error checking for template file %s: %v", config.ChallengeTmpl, err)
+	} else {
+		tmpl, err = template.ParseFiles(config.ChallengeTmpl)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse challenge template file %s: %v", config.ChallengeTmpl, err)
+		}
 	}
 
 	// transform exempt IP strings into what go can easily parse (net.IPNet)
@@ -137,6 +149,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		botCache:      lru.New(expiration, 1*time.Hour),
 		verifiedCache: lru.New(expiration, 1*time.Hour),
 		exemptIps:     ips,
+		tmpl:          tmpl,
 	}
 
 	// set the captcha config based on the provider
@@ -213,13 +226,6 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 }
 
 func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, req *http.Request) {
-	tmpl, err := template.ParseFiles(bc.config.ChallengeTmpl)
-	if err != nil {
-		log.Error("Unable to parse go template", "tmpl", bc.config.ChallengeTmpl, "err", err)
-		http.Error(rw, "Internal error", http.StatusInternalServerError)
-		return
-	}
-
 	d := map[string]string{
 		"SiteKey":      bc.config.SiteKey,
 		"FrontendJS":   bc.captchaConfig.js,
@@ -227,7 +233,7 @@ func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, req *http.R
 		"ChallengeURL": bc.config.ChallengeURL,
 		"Destination":  req.URL.Query().Get("destination"),
 	}
-	err = tmpl.Execute(rw, d)
+	err := bc.tmpl.Execute(rw, d)
 	if err != nil {
 		log.Error("Unable to execute go template", "tmpl", bc.config.ChallengeTmpl, "err", err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
@@ -578,4 +584,38 @@ func (bc *CaptchaProtect) loadState() {
 	}
 
 	log.Info("Loaded previous state")
+}
+
+func getDefaultTmpl() string {
+	return `<html>
+  <head>
+    <title>Verifying connection</title>
+    <script src="{{ .FrontendJS }}" async defer referrerpolicy="no-referrer"></script>
+  </head>
+  <body>
+    <h1>Verifying connection</h1>
+    <p>One moment while we verify your network connection.</p>
+    <form action="{{ .ChallengeURL }}" method="post" id="captcha-form" accept-charset="UTF-8">
+        <div
+            data-callback="captchaCallback"
+            class="{{ .FrontendKey }}"
+            data-sitekey="{{ .SiteKey }}"
+            data-theme="auto"
+            data-size="normal"
+            data-language="auto"
+            data-retry="auto"
+            interval="8000"
+            data-appearance="always">
+        </div>
+        <input type="hidden" name="destination" value="{{ .Destination }}">
+    </form>
+    <script type="text/javascript">
+        function captchaCallback(token) {
+            setTimeout(function() {
+                document.getElementById("captcha-form").submit();
+            }, 1000);
+        }
+    </script>
+  </body>
+</html>`
 }
