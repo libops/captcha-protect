@@ -70,7 +70,7 @@ services:
             --providers.docker=true
             --providers.docker.network=default
             --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
-            --experimental.plugins.captcha-protect.version=v1.1.0
+            --experimental.plugins.captcha-protect.version=v1.1.2
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
