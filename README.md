@@ -9,7 +9,7 @@ You may have seen CAPTCHAs added to individual forms on the web to prevent bots 
 The basic logic looks like
 
 ```mermaid
-flowchart TD
+flowchart LR
     Client(Client accesses path on website) --> IP{Has client passed captcha challenge in the last 24h?}
     IP -- Yes --> Continue(Go to original destination)
     IP -- No --> IP_BYPASS{Is client IP excluded by captcha-protect config?}
