@@ -6,10 +6,10 @@ Traefik middleware to challenge individual IPs in a subnet when traffic spikes a
 
 You may have seen CAPTCHAs added to individual forms on the web to prevent bots from spamming submissions. This plugin extends that concept to your entire site (or specific routes on your site), effectively placing your entire site behind a CAPTCHA. However, the CAPTCHA is only triggered when a spike in traffic is detected from the same IP subnet. Once the CAPTCHA is successfully completed, that IP is no longer challenged, allowing uninterrupted browsing.
 
-The basic logic looks like
+<details><summary>anti-bot decision tree</summary>
 
 ```mermaid
-flowchart LR
+flowchart TD
     Client(Client accesses path on website) --> IP{Has client passed captcha challenge in the last 24h?}
     IP -- Yes --> Continue(Go to original destination)
     IP -- No --> IP_BYPASS{Is client IP excluded by captcha-protect config?}
@@ -27,6 +27,7 @@ flowchart LR
     CHALLENGE -- Pass --> Continue(Go to original destination)
     CHALLENGE -- Fail --> Stuck
 ```
+</details>
 
 ## Config
 
