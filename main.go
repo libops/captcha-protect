@@ -409,12 +409,12 @@ func (bc *CaptchaProtect) getClientIP(req *http.Request) (string, string) {
 			depth--
 		}
 		if ip == "" {
-			log.Error("No non-exempt IPs in header. req.RemoteAddr", "ipDepth", bc.config.IPDepth, bc.config.IPForwardedHeader, req.Header.Get(bc.config.IPForwardedHeader))
+			log.Debug("No non-exempt IPs in header. req.RemoteAddr", "ipDepth", bc.config.IPDepth, bc.config.IPForwardedHeader, req.Header.Get(bc.config.IPForwardedHeader))
 			ip = req.RemoteAddr
 		}
 	} else {
 		if bc.config.IPForwardedHeader != "" {
-			log.Error("Received a blank header value. Defaulting to real IP")
+			log.Debug("Received a blank header value. Defaulting to real IP")
 		}
 		ip = req.RemoteAddr
 	}
