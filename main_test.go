@@ -2,7 +2,10 @@ package captcha_protect
 
 import (
 	"errors"
+	"log/slog"
 	"net"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -201,15 +204,6 @@ func TestParseIp(t *testing.T) {
 }
 
 func TestIsIpExcluded(t *testing.T) {
-	// Helper function to parse CIDR blocks
-	parseCIDR := func(cidr string) *net.IPNet {
-		_, block, err := net.ParseCIDR(cidr)
-		if err != nil {
-			t.Fatalf("Failed to parse CIDR %s: %v", cidr, err)
-		}
-		return block
-	}
-
 	tests := []struct {
 		name      string
 		clientIP  string
@@ -219,37 +213,37 @@ func TestIsIpExcluded(t *testing.T) {
 		{
 			name:      "IP in exempt subnet",
 			clientIP:  "192.168.1.5",
-			exemptIps: []*net.IPNet{parseCIDR("192.168.1.0/24")},
+			exemptIps: []*net.IPNet{parseCIDR("192.168.1.0/24", t)},
 			expected:  true,
 		},
 		{
 			name:      "IP not in exempt subnet",
 			clientIP:  "192.168.2.5",
-			exemptIps: []*net.IPNet{parseCIDR("192.168.1.0/24")},
+			exemptIps: []*net.IPNet{parseCIDR("192.168.1.0/24", t)},
 			expected:  false,
 		},
 		{
 			name:      "Multiple exempt subnets, matching one",
 			clientIP:  "10.0.0.15",
-			exemptIps: []*net.IPNet{parseCIDR("192.168.1.0/24"), parseCIDR("10.0.0.0/16")},
+			exemptIps: []*net.IPNet{parseCIDR("192.168.1.0/24", t), parseCIDR("10.0.0.0/16", t)},
 			expected:  true,
 		},
 		{
 			name:      "IPv6 address in exempt range",
 			clientIP:  "2001:db8::1",
-			exemptIps: []*net.IPNet{parseCIDR("2001:db8::/32")},
+			exemptIps: []*net.IPNet{parseCIDR("2001:db8::/32", t)},
 			expected:  true,
 		},
 		{
 			name:      "IPv6 address not in exempt range",
 			clientIP:  "2001:db9::1",
-			exemptIps: []*net.IPNet{parseCIDR("2001:db8::/32")},
+			exemptIps: []*net.IPNet{parseCIDR("2001:db8::/32", t)},
 			expected:  false,
 		},
 		{
 			name:      "Invalid IP address",
 			clientIP:  "invalid-ip",
-			exemptIps: []*net.IPNet{parseCIDR("192.168.1.0/24")},
+			exemptIps: []*net.IPNet{parseCIDR("192.168.1.0/24", t)},
 			expected:  false,
 		},
 		{
@@ -357,4 +351,133 @@ func TestRouteIsProtected(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetClientIP(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      Config
+		exemptIps   []*net.IPNet
+		headerValue string
+		remoteAddr  string
+		expectedIP  string
+	}{
+		{
+			name: "Header with multiple IPs, no exclusion, IPDepth 0 picks last IP",
+			config: Config{
+				IPForwardedHeader: "X-Forwarded-For",
+				IPDepth:           0,
+			},
+			exemptIps:   []*net.IPNet{},
+			headerValue: "1.1.1.1, 2.2.2.2",
+			remoteAddr:  "3.3.3.3:1234",
+			expectedIP:  "2.2.2.2",
+		},
+		{
+			name: "Header with multiple IPs and one excluded, IPDepth 0 picks non-excluded last",
+			config: Config{
+				IPForwardedHeader: "X-Forwarded-For",
+				IPDepth:           0,
+			},
+			exemptIps:   []*net.IPNet{parseCIDR("2.2.2.2/32", t)},
+			headerValue: "1.1.1.1, 3.3.3.3, 2.2.2.2",
+			remoteAddr:  "3.3.3.3:1234",
+			expectedIP:  "3.3.3.3",
+		},
+		{
+			name: "Header with multiple IPs, IPDepth 1 picks second-to-last non-exempt IP",
+			config: Config{
+				IPForwardedHeader: "X-Forwarded-For",
+				IPDepth:           1,
+			},
+			exemptIps:   []*net.IPNet{},
+			headerValue: "1.1.1.1, 2.2.2.2, 3.3.3.3, 127.0.0.1, 192.168.0.1",
+			remoteAddr:  "3.3.3.3:1234",
+			expectedIP:  "2.2.2.2",
+		},
+		{
+			name: "Header with multiple IPs, IPDepth 1 picks second-to-last IP",
+			config: Config{
+				IPForwardedHeader: "X-Forwarded-For",
+				IPDepth:           1,
+			},
+			exemptIps:   []*net.IPNet{},
+			headerValue: "1.1.1.1, 2.2.2.2, 3.3.3.3",
+			remoteAddr:  "3.3.3.3:1234",
+			expectedIP:  "2.2.2.2",
+		},
+		{
+			name: "Header with just exempt IPs header falls back to RemoteAddr with port stripped",
+			config: Config{
+				IPForwardedHeader: "X-Forwarded-For",
+				IPDepth:           0,
+			},
+			exemptIps:   []*net.IPNet{parseCIDR("2.2.0.0/16", t)},
+			headerValue: "127.0.0.1, 192.168.1.1, 172.16.1.2, 2.2.3.4",
+			remoteAddr:  "4.4.4.4:5678",
+			expectedIP:  "4.4.4.4",
+		},
+		{
+			name: "Blank header falls back to RemoteAddr with port stripped",
+			config: Config{
+				IPForwardedHeader: "X-Forwarded-For",
+				IPDepth:           0,
+			},
+			exemptIps:   []*net.IPNet{},
+			headerValue: "",
+			remoteAddr:  "4.4.4.4:5678",
+			expectedIP:  "4.4.4.4",
+		},
+		{
+			name: "Header not set in config, use RemoteAddr",
+			config: Config{
+				IPDepth:           0,
+				IPForwardedHeader: "",
+			},
+			exemptIps:   []*net.IPNet{},
+			headerValue: "shouldBeIgnored",
+			remoteAddr:  "5.5.5.5:4321",
+			expectedIP:  "5.5.5.5",
+		},
+	}
+	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
+	log = slog.New(handler)
+	for _, tc := range tests {
+
+		t.Run(tc.name, func(t *testing.T) {
+			// Create a dummy request
+			req := httptest.NewRequest("GET", "http://example.com", nil)
+			req.Header.Set("X-Forwarded-For", tc.headerValue)
+
+			req.RemoteAddr = tc.remoteAddr
+
+			c := CreateConfig()
+			c.IPForwardedHeader = tc.config.IPForwardedHeader
+			c.IPDepth = tc.config.IPDepth
+			exemptIps := tc.exemptIps
+			for _, ip := range c.ExemptIPs {
+				_, r := ParseIp(ip, 16, 64)
+				exemptIps = append(exemptIps, parseCIDR(r, t))
+			}
+			bc := &CaptchaProtect{
+				config:    c,
+				exemptIps: exemptIps,
+			}
+
+			ip, _ := bc.getClientIP(req)
+			if ip != tc.expectedIP {
+				t.Errorf("expected ip %s, got %s", tc.expectedIP, ip)
+			}
+		})
+	}
+}
+
+func parseCIDR(cidr string, t *testing.T) *net.IPNet {
+	_, block, err := net.ParseCIDR(cidr)
+	if err != nil {
+		t.Fatalf("Failed to parse CIDR %s: %v", cidr, err)
+	}
+	return block
 }

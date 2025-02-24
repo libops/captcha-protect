@@ -30,6 +30,7 @@ type Config struct {
 	IPv4SubnetMask        int      `json:"ipv4subnetMask"`
 	IPv6SubnetMask        int      `json:"ipv6subnetMask"`
 	IPForwardedHeader     string   `json:"ipForwardedHeader"`
+	IPDepth               int      `json:"ipDepth"`
 	ProtectParameters     string   `json:"protectParameters"`
 	ProtectRoutes         []string `json:"protectRoutes"`
 	ProtectFileExtensions []string `json:"protectFileExtensions"`
@@ -81,6 +82,7 @@ func CreateConfig() *Config {
 		},
 		GoodBots: []string{},
 		ExemptIPs: []string{
+			"127.0.0.0/8",
 			"10.0.0.0/8",
 			"172.16.0.0/12",
 			"192.168.0.0/16",
@@ -90,6 +92,7 @@ func CreateConfig() *Config {
 		ChallengeTmpl:   "challenge.tmpl.html",
 		EnableStatsPage: "false",
 		LogLevel:        "INFO",
+		IPDepth:         0,
 	}
 }
 
@@ -392,8 +395,28 @@ func (bc *CaptchaProtect) getClientIP(req *http.Request) (string, string) {
 	ip := req.Header.Get(bc.config.IPForwardedHeader)
 	if bc.config.IPForwardedHeader != "" && ip != "" {
 		components := strings.Split(ip, ",")
-		ip = strings.TrimSpace(components[0])
+		ips := []string{}
+		for _, _ip := range components {
+			i := strings.TrimSpace(_ip)
+			if !IsIpExcluded(i, bc.exemptIps) {
+				ips = append(ips, i)
+			}
+		}
+		if len(ips) == 0 {
+			log.Error("No non-empty IPs in header. Defaulting to 0", "ipDepth", bc.config.IPDepth, bc.config.IPForwardedHeader, ip)
+			ip = req.RemoteAddr
+		} else {
+			len := len(ips) - bc.config.IPDepth
+			if len < 1 {
+				log.Error("Bad value for ipDepth for given header. Defaulting to 0", "ipDepth", bc.config.IPDepth, bc.config.IPForwardedHeader, ip)
+				len = 1
+			}
+			ip = ips[len-1]
+		}
 	} else {
+		if bc.config.IPForwardedHeader != "" {
+			log.Error("Received a blank header value. Defaulting to real IP")
+		}
 		ip = req.RemoteAddr
 	}
 	if strings.Contains(ip, ":") {
