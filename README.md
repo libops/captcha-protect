@@ -71,7 +71,7 @@ services:
             --providers.docker=true
             --providers.docker.network=default
             --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
-            --experimental.plugins.captcha-protect.version=v1.2.1
+            --experimental.plugins.captcha-protect.version=v1.3.0
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
@@ -100,6 +100,7 @@ services:
 | `ipv4subnetMask`        | `int`                   | `16`                    | CIDR subnet mask to group IPv4 addresses for rate limiting.                                                                                                                               |
 | `ipv6subnetMask`        | `int`                   | `64`                    | CIDR subnet mask to group IPv6 addresses for rate limiting.                                                                                                                               |
 | `ipForwardedHeader`     | `string`                | `""`                    | Header to check for the original client IP if Traefik is behind a load balancer.                                                                                                          |
+| `ipDepth`               | `int`                   | `0`                     | How deep past the last non-exempt IP to fetch the real IP from `ipForwardedHeader`. Default 0 returns the last IP in the forward header                                                   |
 | `goodBots`              | `[]string` (encouraged) | *see below*             | List of second-level domains for bots that are never challenged or rate-limited.                                                                                                          |
 | `protectParameters`     | `string`                | `"false"`               | Forces rate limiting even for good bots if URL parameters are present. Useful for protecting faceted search pages.                                                                        |
 | `protectFileExtensions` | `[]string`              | `""`                    | Comma-separated file extensions to protect. By default, your protected routes only protect html files. This is to prevent files like CSS/JS/img from tripping the rate limit.             |
