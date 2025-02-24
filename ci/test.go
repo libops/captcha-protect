@@ -27,6 +27,7 @@ const expectedRedirectURL = "http://localhost/challenge?destination=%2F"
 
 func main() {
 	_ips := []string{
+		"127.0.0.0/8",
 		"10.0.0.0/8",
 		"172.16.0.0/12",
 		"192.168.0.0/16",
