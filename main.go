@@ -395,23 +395,22 @@ func (bc *CaptchaProtect) getClientIP(req *http.Request) (string, string) {
 	ip := req.Header.Get(bc.config.IPForwardedHeader)
 	if bc.config.IPForwardedHeader != "" && ip != "" {
 		components := strings.Split(ip, ",")
-		ips := []string{}
-		for _, _ip := range components {
-			i := strings.TrimSpace(_ip)
-			if !IsIpExcluded(i, bc.exemptIps) {
-				ips = append(ips, i)
+		depth := bc.config.IPDepth
+		ip = ""
+		for i := len(components) - 1; i >= 0; i-- {
+			_ip := strings.TrimSpace(components[i])
+			if IsIpExcluded(_ip, bc.exemptIps) {
+				continue
 			}
+			if depth == 0 {
+				ip = _ip
+				break
+			}
+			depth--
 		}
-		if len(ips) == 0 {
-			log.Error("No non-empty IPs in header. Defaulting to 0", "ipDepth", bc.config.IPDepth, bc.config.IPForwardedHeader, ip)
+		if ip == "" {
+			log.Error("No non-exempt IPs in header. req.RemoteAddr", "ipDepth", bc.config.IPDepth, bc.config.IPForwardedHeader, req.Header.Get(bc.config.IPForwardedHeader))
 			ip = req.RemoteAddr
-		} else {
-			len := len(ips) - bc.config.IPDepth
-			if len < 1 {
-				log.Error("Bad value for ipDepth for given header. Defaulting to 0", "ipDepth", bc.config.IPDepth, bc.config.IPForwardedHeader, ip)
-				len = 1
-			}
-			ip = ips[len-1]
 		}
 	} else {
 		if bc.config.IPForwardedHeader != "" {
