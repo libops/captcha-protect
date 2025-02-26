@@ -34,6 +34,7 @@ type Config struct {
 	ProtectParameters     string   `json:"protectParameters"`
 	ProtectRoutes         []string `json:"protectRoutes"`
 	ProtectFileExtensions []string `json:"protectFileExtensions"`
+	ProtectHttpMethods    []string `json:"protectHttpMethods"`
 	GoodBots              []string `json:"goodBots"`
 	ExemptIPs             []string `json:"exemptIps"`
 	ChallengeURL          string   `json:"challengeURL"`
@@ -70,13 +71,14 @@ type captchaResponse struct {
 
 func CreateConfig() *Config {
 	return &Config{
-		RateLimit:         20,
-		Window:            86400,
-		IPv4SubnetMask:    16,
-		IPv6SubnetMask:    64,
-		IPForwardedHeader: "",
-		ProtectParameters: "false",
-		ProtectRoutes:     []string{},
+		RateLimit:          20,
+		Window:             86400,
+		IPv4SubnetMask:     16,
+		IPv6SubnetMask:     64,
+		IPForwardedHeader:  "",
+		ProtectParameters:  "false",
+		ProtectRoutes:      []string{},
+		ProtectHttpMethods: []string{},
 		ProtectFileExtensions: []string{
 			"html",
 		},
@@ -116,6 +118,14 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	if len(config.ProtectRoutes) == 0 {
 		return nil, fmt.Errorf("you must protect at least one route with the protectRoutes config value. / will cover your entire site")
 	}
+
+	if len(config.ProtectHttpMethods) == 0 {
+		config.ProtectHttpMethods = []string{
+			"GET",
+			"HEAD",
+		}
+	}
+	config.ParseHttpMethods()
 
 	var tmpl *template.Template
 	if _, err := os.Stat(config.ChallengeTmpl); os.IsNotExist(err) {
@@ -317,6 +327,10 @@ func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
 }
 
 func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
+	if !strInSlice(req.Method, bc.config.ProtectHttpMethods) {
+		return false
+	}
+
 	_, verified := bc.verifiedCache.Get(clientIP)
 	if verified {
 		return false
@@ -545,6 +559,18 @@ func ParseLogLevel(level string) (slog.Level, error) {
 	}
 }
 
+// log a warning if protected methods contains an invalid method
+func (c *Config) ParseHttpMethods() {
+	for _, method := range c.ProtectHttpMethods {
+		switch method {
+		case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE":
+			continue
+		default:
+			log.Warn("unknown http method", "method", method)
+		}
+	}
+}
+
 func (bc *CaptchaProtect) saveState(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -640,4 +666,13 @@ func getDefaultTmpl() string {
     </script>
   </body>
 </html>`
+}
+
+func strInSlice(s string, sl []string) bool {
+	for _, a := range sl {
+		if a == s {
+			return true
+		}
+	}
+	return false
 }

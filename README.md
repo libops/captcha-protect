@@ -71,7 +71,7 @@ services:
             --providers.docker=true
             --providers.docker.network=default
             --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
-            --experimental.plugins.captcha-protect.version=v1.3.2
+            --experimental.plugins.captcha-protect.version=v1.4.0
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
@@ -95,7 +95,7 @@ services:
 | `captchaProvider`       | `string` (required)     | `""`                    | The captcha type to use. Supported values: `turnstile`, `hcaptcha`, and `recaptcha`.                                                                                                      |
 | `siteKey`               | `string` (required)     | `""`                    | The captcha site key.                                                                                                                                                                     |
 | `secretKey`             | `string` (required)     | `""`                    | The captcha secret key.                                                                                                                                                                   |
-| `rateLimit`             | `uint`                  | `20`                     | Maximum requests allowed from a subnet before a challenge is triggered.                                                                                                                  |
+| `rateLimit`             | `uint`                  | `20`                    | Maximum requests allowed from a subnet before a challenge is triggered.                                                                                                                   |
 | `window`                | `int`                   | `86400`                 | Duration (in seconds) for monitoring requests per subnet.                                                                                                                                 |
 | `ipv4subnetMask`        | `int`                   | `16`                    | CIDR subnet mask to group IPv4 addresses for rate limiting.                                                                                                                               |
 | `ipv6subnetMask`        | `int`                   | `64`                    | CIDR subnet mask to group IPv6 addresses for rate limiting.                                                                                                                               |
@@ -104,6 +104,7 @@ services:
 | `goodBots`              | `[]string` (encouraged) | *see below*             | List of second-level domains for bots that are never challenged or rate-limited.                                                                                                          |
 | `protectParameters`     | `string`                | `"false"`               | Forces rate limiting even for good bots if URL parameters are present. Useful for protecting faceted search pages.                                                                        |
 | `protectFileExtensions` | `[]string`              | `""`                    | Comma-separated file extensions to protect. By default, your protected routes only protect html files. This is to prevent files like CSS/JS/img from tripping the rate limit.             |
+| `protectHttpMethods`    | `[]string`              | `"GET,HEAD"`            | Comma-separated list of HTTP methods to protect against                                                                                                                                   |
 | `exemptIps`             | `[]string`              | `privateIPs`            | CIDR-formatted IPs that should never be challenged. Private IP ranges are always exempt.                                                                                                  |
 | `challengeURL`          | `string`                | `"/challenge"`          | URL where challenges are served. This will override existing routes if there is a conflict.                                                                                               |
 | `challengeTmpl`         | `string`                | `"./challenge.tmpl.html"`| Path to the Go HTML template for the captcha challenge page.                                                                                                                             |
