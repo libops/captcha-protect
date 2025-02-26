@@ -39,22 +39,25 @@ jobs:
             exit 1
           fi
 
-      - name: Install dependencies
-        run: go get .
-
-      - name: vendor
-        run: go mod vendor
-
       - name: unit test
         run: go test -v -race ./...
 
-      - name: integration test
+  integration-test:
+    needs: [run]
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        traefik: [v2.11, v3.0, v3.1, v3.2, v3.3]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: run
         run: go run test.go
         working-directory: ./ci
-
-      - name: get stats
-        run: |
-          curl -s -H "X-Forwarded-For: 127.0.0.1" http://localhost/captcha-protect/stats | sort -n
+        env:
+          TRAEFIK_TAG: ${{ matrix.traefik }}
 
       - name: cleanup
         if: ${{ always() }}

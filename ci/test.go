@@ -205,6 +205,11 @@ func runCommand(name string, args ...string) {
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(cmd.Env, fmt.Sprintf("RATE_LIMIT=%d", rateLimit))
 	cmd.Env = append(cmd.Env, fmt.Sprintf("PATH=%s", os.Getenv("PATH")))
+
+	tt := os.Getenv("TRAEFIK_TAG")
+	if tt != "" {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("TRAEFIK_TAG=%s", tt))
+	}
 	if err := cmd.Run(); err != nil {
 		log.Fatalf("Command failed: %v", err)
 	}
