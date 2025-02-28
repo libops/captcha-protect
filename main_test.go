@@ -144,9 +144,23 @@ func TestParseIp(t *testing.T) {
 			wantSubnet: "192",
 		},
 		{
+			name:       "IPv4 /10",
+			ip:         "192.168.1.1",
+			ipv4Mask:   10,
+			wantFull:   "192.168.1.1",
+			wantSubnet: "192.128",
+		},
+		{
 			name:       "IPv4 /16",
 			ip:         "192.168.1.1",
 			ipv4Mask:   16,
+			wantFull:   "192.168.1.1",
+			wantSubnet: "192.168",
+		},
+		{
+			name:       "IPv4 /20",
+			ip:         "192.168.1.1",
+			ipv4Mask:   20,
 			wantFull:   "192.168.1.1",
 			wantSubnet: "192.168",
 		},
@@ -158,11 +172,11 @@ func TestParseIp(t *testing.T) {
 			wantSubnet: "192.168.1",
 		},
 		{
-			name:       "IPv4 unrecognized mask falls back to /16",
+			name:       "IPv4 /32",
 			ip:         "192.168.1.1",
-			ipv4Mask:   32, // not one of the allowed values; fallback in our implementation is /16.
+			ipv4Mask:   32,
 			wantFull:   "192.168.1.1",
-			wantSubnet: "192.168",
+			wantSubnet: "192.168.1.1",
 		},
 		{
 			name:     "IPv6 /64",

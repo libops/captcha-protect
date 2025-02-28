@@ -108,9 +108,16 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	level, err := ParseLogLevel(config.LogLevel)
 	if err != nil {
-		log.Error("Unknown log level", "err", err)
+		log.Warn("Unknown log level", "err", err)
 	}
 	logLevel.Set(level)
+
+	if config.IPv4SubnetMask < 8 || config.IPv4SubnetMask > 32 {
+		return nil, fmt.Errorf("invalid ipv4 mask: %d. Must be between 8 and 32", config.IPv4SubnetMask)
+	}
+	if config.IPv6SubnetMask < 8 || config.IPv6SubnetMask > 128 {
+		return nil, fmt.Errorf("invalid ipv6 mask: %d. Must be between 8 and 128", config.IPv6SubnetMask)
+	}
 
 	expiration := time.Duration(config.Window) * time.Second
 	log.Debug("Captcha config", "config", config)
@@ -448,23 +455,17 @@ func ParseIp(ip string, ipv4Mask, ipv6Mask int) (string, string) {
 
 	// For IPv4 addresses
 	if parsedIP.To4() != nil {
-		ipParts := strings.Split(ip, ".")
-		var required int
-		switch ipv4Mask {
-		case 8:
-			required = 1
-		case 16:
-			required = 2
-		case 24:
-			required = 3
-		default:
-			// fallback to a default, for example /16
-			required = 2
+		mask := net.CIDRMask(ipv4Mask, 32)
+		network := parsedIP.Mask(mask)
+		subnet := []string{}
+		for _, octet := range strings.Split(network.String(), ".") {
+			if octet == "0" {
+				break
+			}
+			subnet = append(subnet, octet)
 		}
-		if len(ipParts) >= required {
-			subnet := strings.Join(ipParts[:required], ".")
-			return ip, subnet
-		}
+
+		return ip, strings.Join(subnet, ".")
 	}
 
 	// For IPv6 addresses
