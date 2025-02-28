@@ -456,16 +456,8 @@ func ParseIp(ip string, ipv4Mask, ipv6Mask int) (string, string) {
 	// For IPv4 addresses
 	if parsedIP.To4() != nil {
 		mask := net.CIDRMask(ipv4Mask, 32)
-		network := parsedIP.Mask(mask)
-		subnet := []string{}
-		for _, octet := range strings.Split(network.String(), ".") {
-			if octet == "0" {
-				break
-			}
-			subnet = append(subnet, octet)
-		}
-
-		return ip, strings.Join(subnet, ".")
+		subnet := parsedIP.Mask(mask)
+		return ip, subnet.String()
 	}
 
 	// For IPv6 addresses
