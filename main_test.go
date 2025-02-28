@@ -6,9 +6,14 @@ import (
 	"net"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 )
+
+func init() {
+	log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
+}
 
 func TestIsIpGoodBot(t *testing.T) {
 	// Save the original functions and restore them at the end.
@@ -179,20 +184,18 @@ func TestParseIp(t *testing.T) {
 			wantSubnet: "192.168.1.1",
 		},
 		{
-			name:     "IPv6 /64",
-			ip:       "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
-			ipv6Mask: 64,
-			wantFull: "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
-			// for /64, we keep 4 hextets
-			wantSubnet: strings.Join(strings.Split("2001:0db8:85a3:0000:0000:8a2e:0370:7334", ":")[:4], ":"),
+			name:       "IPv6 /64",
+			ip:         "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			ipv6Mask:   64,
+			wantFull:   "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			wantSubnet: "2001:db8:85a3::",
 		},
 		{
-			name:     "IPv6 /48",
-			ip:       "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
-			ipv6Mask: 48,
-			wantFull: "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
-			// for /48, we keep 3 hextets
-			wantSubnet: strings.Join(strings.Split("2001:0db8:85a3:0000:0000:8a2e:0370:7334", ":")[:3], ":"),
+			name:       "IPv6 /48",
+			ip:         "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			ipv6Mask:   48,
+			wantFull:   "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+			wantSubnet: "2001:db8:85a3::",
 		},
 		{
 			name:       "Invalid IP returns same string",
@@ -206,7 +209,13 @@ func TestParseIp(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gotFull, gotSubnet := ParseIp(tc.ip, tc.ipv4Mask, tc.ipv6Mask)
+			c := CreateConfig()
+			bc := &CaptchaProtect{
+				config:   c,
+				ipv4Mask: net.CIDRMask(tc.ipv4Mask, 32),
+				ipv6Mask: net.CIDRMask(tc.ipv6Mask, 128),
+			}
+			gotFull, gotSubnet := bc.ParseIp(tc.ip)
 			if gotFull != tc.wantFull {
 				t.Errorf("ParseIp(%q, %d, %d) got full = %q, want %q", tc.ip, tc.ipv4Mask, tc.ipv6Mask, gotFull, tc.wantFull)
 			}
@@ -454,10 +463,6 @@ func TestGetClientIP(t *testing.T) {
 			expectedIP:  "5.5.5.5",
 		},
 	}
-	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	})
-	log = slog.New(handler)
 	for _, tc := range tests {
 
 		t.Run(tc.name, func(t *testing.T) {
@@ -471,14 +476,15 @@ func TestGetClientIP(t *testing.T) {
 			c.IPForwardedHeader = tc.config.IPForwardedHeader
 			c.IPDepth = tc.config.IPDepth
 			exemptIps := tc.exemptIps
-			for _, ip := range c.ExemptIPs {
-				_, r := ParseIp(ip, 16, 64)
-				exemptIps = append(exemptIps, parseCIDR(r, t))
-			}
 			bc := &CaptchaProtect{
-				config:    c,
-				exemptIps: exemptIps,
+				config:   c,
+				ipv4Mask: net.CIDRMask(16, 32),
+				ipv6Mask: net.CIDRMask(64, 128),
 			}
+			for _, ip := range c.ExemptIPs {
+				exemptIps = append(exemptIps, parseCIDR(ip, t))
+			}
+			bc.exemptIps = exemptIps
 
 			ip, _ := bc.getClientIP(req)
 			if ip != tc.expectedIP {
