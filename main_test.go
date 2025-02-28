@@ -384,6 +384,17 @@ func TestRouteIsProtected(t *testing.T) {
 			path:     "/ajax",
 			expected: false,
 		},
+
+		{
+			name: "Excluded route protected (no prefix match)",
+			config: Config{
+				ProtectRoutes:         []string{"/"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{"/ajax"},
+			},
+			path:     "/not-ajax",
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {

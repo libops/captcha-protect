@@ -364,29 +364,29 @@ func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
 func (bc *CaptchaProtect) RouteIsProtected(path string) bool {
 protected:
 	for _, route := range bc.config.ProtectRoutes {
-		if strings.HasPrefix(path, route) {
-			for _, eRoute := range bc.config.ExcludeRoutes {
-				if strings.HasPrefix(path, eRoute) {
-					continue protected
-				}
+		if !strings.HasPrefix(path, route) {
+			continue
+		}
+
+		// we're on a protected route - make sure this route doesn't have an exclusion
+		for _, eRoute := range bc.config.ExcludeRoutes {
+			if strings.HasPrefix(path, eRoute) {
+				continue protected
 			}
-			ext := filepath.Ext(path)
-			ext = strings.TrimPrefix(ext, ".")
-			if ext == "" {
+		}
+
+		// if this isn't a file, we know we're protected at this point
+		ext := filepath.Ext(path)
+		ext = strings.TrimPrefix(ext, ".")
+		if ext == "" {
+			return true
+		}
+
+		// if we have a file extension, see if we should protect this file extension type
+		for _, protectedExtensions := range bc.config.ProtectFileExtensions {
+			if strings.EqualFold(ext, protectedExtensions) {
 				return true
 			}
-
-			skip := true
-			for _, protectedExtensions := range bc.config.ProtectFileExtensions {
-				if strings.EqualFold(ext, protectedExtensions) {
-					skip = false
-				}
-			}
-			if skip {
-				continue
-			}
-
-			return true
 		}
 	}
 
