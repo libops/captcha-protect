@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"math/rand"
 	"net"
@@ -18,8 +17,10 @@ import (
 	cp "github.com/libops/captcha-protect"
 )
 
-var rateLimit = 5
-var exemptIps []*net.IPNet
+var (
+	rateLimit = 5
+	exemptIps []*net.IPNet
+)
 
 const numIPs = 100
 const parallelism = 10
@@ -34,11 +35,7 @@ func main() {
 		"fc00::/8",
 	}
 	for _, ip := range _ips {
-		parsedIp, err := cp.ParseCIDR(ip)
-		if err != nil {
-			slog.Error("error parsing cidr", "ip", ip, "err", err)
-			os.Exit(1)
-		}
+		parsedIp := parseCIDR(ip)
 		exemptIps = append(exemptIps, parsedIp)
 	}
 
@@ -86,10 +83,23 @@ func generateUniquePublicIPs(n int) []string {
 	ipSet := make(map[string]struct{})
 	var ips []string
 	config := cp.CreateConfig()
+	bc := &cp.CaptchaProtect{}
+	bc.SetExemptIps(exemptIps)
+	err := bc.SetIpv4Mask(16)
+	if err != nil {
+		slog.Error("unable to set ipv4 mask")
+		os.Exit(1)
+	}
+
+	err = bc.SetIpv6Mask(64)
+	if err != nil {
+		slog.Error("unable to set ipv6 mask")
+		os.Exit(1)
+	}
 
 	for len(ips) < n {
 		ip := randomPublicIP(config)
-		ip, ipRange := cp.ParseIp(ip, 16, 64)
+		ip, ipRange := bc.ParseIp(ip)
 		if _, exists := ipSet[ipRange]; !exists {
 			ipSet[ipRange] = struct{}{}
 			ips = append(ips, ip)
@@ -142,7 +152,9 @@ func runParallelChecks(ips []string, rateLimit int) {
 				fmt.Printf("Checking %s\n", ip)
 				output := httpRequest(ip)
 				if output != "" {
-					log.Fatalf("Unexpected output for %s: %s", ip, output)
+					slog.Error("Unexpected output", "ip", ip, "output", output)
+					os.Exit(1)
+
 				}
 			}(ip)
 		}
@@ -157,7 +169,8 @@ func ensureRedirect(ips []string) {
 		output := httpRequest(ip)
 
 		if output != expectedRedirectURL {
-			log.Fatalf("Unexpected output for %s: %s", ip, output)
+			slog.Error("Unexpected output", "ip", ip, "output", output)
+			os.Exit(1)
 		}
 
 		fmt.Printf("Got a redirect! %s\n", output)
@@ -177,12 +190,15 @@ func httpRequest(ip string) string {
 
 	req, err := http.NewRequest("GET", "http://localhost", nil)
 	if err != nil {
-		log.Fatalf("Failed to create request: %v", err)
+		slog.Error("Failed to create request", "err", err)
+		os.Exit(1)
 	}
 	req.Header.Set("X-Forwarded-For", ip)
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatalf("Request failed: %v", err)
+		slog.Error("Request failed", "err", err)
+		os.Exit(1)
+
 	}
 	defer resp.Body.Close()
 
@@ -192,7 +208,9 @@ func httpRequest(ip string) string {
 		if err == http.ErrNoLocation {
 			return ""
 		}
-		log.Fatalf("Failed to get redirect URL: %v", err)
+		slog.Error("Failed to get redirect URL", "err", err)
+		os.Exit(1)
+
 	}
 
 	return strings.TrimSpace(location.String())
@@ -211,38 +229,55 @@ func runCommand(name string, args ...string) {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("TRAEFIK_TAG=%s", tt))
 	}
 	if err := cmd.Run(); err != nil {
-		log.Fatalf("Command failed: %v", err)
+		slog.Error("Command failed", "err", err)
+		os.Exit(1)
 	}
 }
 
 func checkStateReload() {
 	resp, err := http.Get("http://localhost/captcha-protect/stats")
 	if err != nil {
-		log.Fatalf("Failed to make GET request: %v", err)
+		slog.Error("Failed to make GET request", "err", err)
+		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatalf("Failed to read response body: %v", err)
+		slog.Error("Failed to read response body", "err", err)
+		os.Exit(1)
+
 	}
 	var jsonResponse map[string]interface{}
 	err = json.Unmarshal(body, &jsonResponse)
 	if err != nil {
-		log.Fatalf("Failed to unmarshal JSON: %v", err)
+		slog.Error("Failed to unmarshal JSON", "err", err)
+		os.Exit(1)
+
 	}
 	bots, exists := jsonResponse["bots"]
 	if !exists {
-		log.Fatalf("Key 'bots' not found in JSON response")
+		slog.Error("Key 'bots' not found in JSON response")
+		os.Exit(1)
 	}
 	botsMap, ok := bots.(map[string]interface{})
 	if !ok {
-		log.Fatalf("'bots' is not an array")
+		slog.Error("'bots' is not an array")
+		os.Exit(1)
 	}
 
 	if len(botsMap) != numIPs {
-		log.Fatalf("Expected %d bots, but got %d", numIPs, len(botsMap))
+		slog.Error("Unexpected number of bots", "expected", numIPs, "received", len(botsMap))
+		os.Exit(1)
 	}
 
-	log.Println("State reloaded successfully!")
+	slog.Info("State reloaded successfully!")
+}
+
+func parseCIDR(cidr string) *net.IPNet {
+	_, block, err := net.ParseCIDR(cidr)
+	if err != nil {
+		slog.Error("Failed to parse CIDR", "cidr", cidr, "err", err)
+	}
+	return block
 }

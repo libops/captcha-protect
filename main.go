@@ -57,6 +57,8 @@ type CaptchaProtect struct {
 	captchaConfig CaptchaConfig
 	exemptIps     []*net.IPNet
 	tmpl          *template.Template
+	ipv4Mask      net.IPMask
+	ipv6Mask      net.IPMask
 }
 
 type CaptchaConfig struct {
@@ -108,7 +110,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	level, err := ParseLogLevel(config.LogLevel)
 	if err != nil {
-		log.Error("Unknown log level", "err", err)
+		log.Warn("Unknown log level", "err", err)
 	}
 	logLevel.Set(level)
 
@@ -163,6 +165,16 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		verifiedCache: lru.New(expiration, 1*time.Hour),
 		exemptIps:     ips,
 		tmpl:          tmpl,
+	}
+
+	err = bc.SetIpv4Mask(config.IPv4SubnetMask)
+	if err != nil {
+		return nil, err
+	}
+
+	err = bc.SetIpv6Mask(config.IPv6SubnetMask)
+	if err != nil {
+		return nil, err
 	}
 
 	// set the captcha config based on the provider
@@ -437,10 +449,10 @@ func (bc *CaptchaProtect) getClientIP(req *http.Request) (string, string) {
 		ip = host
 	}
 
-	return ParseIp(ip, bc.config.IPv4SubnetMask, bc.config.IPv6SubnetMask)
+	return bc.ParseIp(ip)
 }
 
-func ParseIp(ip string, ipv4Mask, ipv6Mask int) (string, string) {
+func (bc *CaptchaProtect) ParseIp(ip string) (string, string) {
 	parsedIP := net.ParseIP(ip)
 	if parsedIP == nil {
 		return ip, ip
@@ -448,37 +460,37 @@ func ParseIp(ip string, ipv4Mask, ipv6Mask int) (string, string) {
 
 	// For IPv4 addresses
 	if parsedIP.To4() != nil {
-		ipParts := strings.Split(ip, ".")
-		var required int
-		switch ipv4Mask {
-		case 8:
-			required = 1
-		case 16:
-			required = 2
-		case 24:
-			required = 3
-		default:
-			// fallback to a default, for example /16
-			required = 2
-		}
-		if len(ipParts) >= required {
-			subnet := strings.Join(ipParts[:required], ".")
-			return ip, subnet
-		}
+		subnet := parsedIP.Mask(bc.ipv4Mask)
+		return ip, subnet.String()
 	}
 
 	// For IPv6 addresses
 	if parsedIP.To16() != nil {
-		ipParts := strings.Split(ip, ":")
-		// Calculate the number of hextets required.
-		required := ipv6Mask / 16
-		if len(ipParts) >= required {
-			subnet := strings.Join(ipParts[:required], ":")
-			return ip, subnet
-		}
+		subnet := parsedIP.Mask(bc.ipv6Mask)
+		return ip, subnet.String()
 	}
 
+	log.Warn("Unknown ip version", "ip", ip)
+
 	return ip, ip
+}
+
+func (bc *CaptchaProtect) SetIpv4Mask(m int) error {
+	if m < 8 || m > 32 {
+		return fmt.Errorf("invalid ipv4 mask: %d. Must be between 8 and 32", m)
+	}
+	bc.ipv4Mask = net.CIDRMask(m, 32)
+
+	return nil
+}
+
+func (bc *CaptchaProtect) SetIpv6Mask(m int) error {
+	if m < 8 || m > 128 {
+		return fmt.Errorf("invalid ipv6 mask: %d. Must be between 8 and 128", m)
+	}
+	bc.ipv6Mask = net.CIDRMask(m, 128)
+
+	return nil
 }
 
 func (bc *CaptchaProtect) isGoodBot(req *http.Request, clientIP string) bool {
@@ -533,6 +545,10 @@ func IsIpGoodBot(clientIP string, goodBots []string) bool {
 	}
 
 	return false
+}
+
+func (bc *CaptchaProtect) SetExemptIps(exemptIps []*net.IPNet) {
+	bc.exemptIps = exemptIps
 }
 
 func ParseCIDR(cidr string) (*net.IPNet, error) {
