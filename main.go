@@ -375,7 +375,7 @@ protected:
 			}
 		}
 
-		// if this isn't a file, we know we're protected at this point
+		// if this path isn't a file, go ahead and mark this path as protected
 		ext := filepath.Ext(path)
 		ext = strings.TrimPrefix(ext, ".")
 		if ext == "" {
