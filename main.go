@@ -33,6 +33,7 @@ type Config struct {
 	IPDepth               int      `json:"ipDepth"`
 	ProtectParameters     string   `json:"protectParameters"`
 	ProtectRoutes         []string `json:"protectRoutes"`
+	ExcludeRoutes         []string `json:"excludeRoutes"`
 	ProtectFileExtensions []string `json:"protectFileExtensions"`
 	ProtectHttpMethods    []string `json:"protectHttpMethods"`
 	GoodBots              []string `json:"goodBots"`
@@ -80,6 +81,7 @@ func CreateConfig() *Config {
 		IPForwardedHeader:  "",
 		ProtectParameters:  "false",
 		ProtectRoutes:      []string{},
+		ExcludeRoutes:      []string{},
 		ProtectHttpMethods: []string{},
 		ProtectFileExtensions: []string{
 			"html",
@@ -360,8 +362,14 @@ func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
 }
 
 func (bc *CaptchaProtect) RouteIsProtected(path string) bool {
+protected:
 	for _, route := range bc.config.ProtectRoutes {
 		if strings.HasPrefix(path, route) {
+			for _, eRoute := range bc.config.ExcludeRoutes {
+				if strings.HasPrefix(path, eRoute) {
+					continue protected
+				}
+			}
 			ext := filepath.Ext(path)
 			ext = strings.TrimPrefix(ext, ".")
 			if ext == "" {

@@ -299,6 +299,7 @@ func TestRouteIsProtected(t *testing.T) {
 			config: Config{
 				ProtectRoutes:         []string{"/"},
 				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{},
 			},
 			path:     "/foo",
 			expected: true,
@@ -308,6 +309,7 @@ func TestRouteIsProtected(t *testing.T) {
 			config: Config{
 				ProtectRoutes:         []string{"/foo"},
 				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{},
 			},
 			path:     "/bar",
 			expected: false,
@@ -317,6 +319,7 @@ func TestRouteIsProtected(t *testing.T) {
 			config: Config{
 				ProtectRoutes:         []string{"/foo"},
 				ProtectFileExtensions: []string{"css", "js"},
+				ExcludeRoutes:         []string{},
 			},
 			path:     "/foo/bar/style.css",
 			expected: true,
@@ -326,6 +329,7 @@ func TestRouteIsProtected(t *testing.T) {
 			config: Config{
 				ProtectRoutes:         []string{"/"},
 				ProtectFileExtensions: []string{"css", "js"},
+				ExcludeRoutes:         []string{},
 			},
 			path:     "/foo/bar/data.html",
 			expected: true,
@@ -335,6 +339,7 @@ func TestRouteIsProtected(t *testing.T) {
 			config: Config{
 				ProtectRoutes:         []string{"/foo"},
 				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{},
 			},
 			path:     "/foo/any/route",
 			expected: true,
@@ -344,6 +349,7 @@ func TestRouteIsProtected(t *testing.T) {
 			config: Config{
 				ProtectRoutes:         []string{},
 				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{},
 			},
 			path:     "/any/route",
 			expected: false,
@@ -353,8 +359,29 @@ func TestRouteIsProtected(t *testing.T) {
 			config: Config{
 				ProtectRoutes:         []string{"/protected"},
 				ProtectFileExtensions: []string{"css", "js"},
+				ExcludeRoutes:         []string{},
 			},
 			path:     "/unprotected/script.js",
+			expected: false,
+		},
+		{
+			name: "Excluded route not protected (exact match)",
+			config: Config{
+				ProtectRoutes:         []string{"/"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{"/ajax"},
+			},
+			path:     "/ajax/foo",
+			expected: false,
+		},
+		{
+			name: "Excluded route not protected (prefix match)",
+			config: Config{
+				ProtectRoutes:         []string{"/"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{"/ajax"},
+			},
+			path:     "/ajax",
 			expected: false,
 		},
 	}
@@ -363,6 +390,7 @@ func TestRouteIsProtected(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := CreateConfig()
 			c.ProtectRoutes = append(c.ProtectRoutes, tt.config.ProtectRoutes...)
+			c.ExcludeRoutes = append(c.ExcludeRoutes, tt.config.ExcludeRoutes...)
 			c.ProtectFileExtensions = append(c.ProtectFileExtensions, tt.config.ProtectFileExtensions...)
 			bc := &CaptchaProtect{
 				config: c,
