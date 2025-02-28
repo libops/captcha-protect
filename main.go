@@ -33,6 +33,7 @@ type Config struct {
 	IPDepth               int      `json:"ipDepth"`
 	ProtectParameters     string   `json:"protectParameters"`
 	ProtectRoutes         []string `json:"protectRoutes"`
+	ExcludeRoutes         []string `json:"excludeRoutes"`
 	ProtectFileExtensions []string `json:"protectFileExtensions"`
 	ProtectHttpMethods    []string `json:"protectHttpMethods"`
 	GoodBots              []string `json:"goodBots"`
@@ -80,6 +81,7 @@ func CreateConfig() *Config {
 		IPForwardedHeader:  "",
 		ProtectParameters:  "false",
 		ProtectRoutes:      []string{},
+		ExcludeRoutes:      []string{},
 		ProtectHttpMethods: []string{},
 		ProtectFileExtensions: []string{
 			"html",
@@ -360,25 +362,31 @@ func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
 }
 
 func (bc *CaptchaProtect) RouteIsProtected(path string) bool {
+protected:
 	for _, route := range bc.config.ProtectRoutes {
-		if strings.HasPrefix(path, route) {
-			ext := filepath.Ext(path)
-			ext = strings.TrimPrefix(ext, ".")
-			if ext == "" {
+		if !strings.HasPrefix(path, route) {
+			continue
+		}
+
+		// we're on a protected route - make sure this route doesn't have an exclusion
+		for _, eRoute := range bc.config.ExcludeRoutes {
+			if strings.HasPrefix(path, eRoute) {
+				continue protected
+			}
+		}
+
+		// if this path isn't a file, go ahead and mark this path as protected
+		ext := filepath.Ext(path)
+		ext = strings.TrimPrefix(ext, ".")
+		if ext == "" {
+			return true
+		}
+
+		// if we have a file extension, see if we should protect this file extension type
+		for _, protectedExtensions := range bc.config.ProtectFileExtensions {
+			if strings.EqualFold(ext, protectedExtensions) {
 				return true
 			}
-
-			skip := true
-			for _, protectedExtensions := range bc.config.ProtectFileExtensions {
-				if strings.EqualFold(ext, protectedExtensions) {
-					skip = false
-				}
-			}
-			if skip {
-				continue
-			}
-
-			return true
 		}
 	}
 

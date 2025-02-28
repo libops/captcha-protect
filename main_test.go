@@ -297,35 +297,39 @@ func TestRouteIsProtected(t *testing.T) {
 		{
 			name: "Protected route - exact match",
 			config: Config{
-				ProtectRoutes:         []string{"/"},
+				ProtectRoutes:         []string{"/foo", "/bar", "/baz"},
 				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{},
 			},
-			path:     "/foo",
+			path:     "/baz",
 			expected: true,
 		},
 		{
 			name: "Unprotected route",
 			config: Config{
-				ProtectRoutes:         []string{"/foo"},
+				ProtectRoutes:         []string{"/foo", "/bar", "/baz"},
 				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{},
 			},
-			path:     "/bar",
+			path:     "/ddos-me",
 			expected: false,
 		},
 		{
 			name: "Protected route with included file extension",
 			config: Config{
-				ProtectRoutes:         []string{"/foo"},
-				ProtectFileExtensions: []string{"css", "js"},
+				ProtectRoutes:         []string{"/foo", "/bar", "/baz"},
+				ProtectFileExtensions: []string{"jp2", "json"},
+				ExcludeRoutes:         []string{},
 			},
-			path:     "/foo/bar/style.css",
+			path:     "/foo/bar/style.json",
 			expected: true,
 		},
 		{
 			name: "html always protected",
 			config: Config{
-				ProtectRoutes:         []string{"/"},
-				ProtectFileExtensions: []string{"css", "js"},
+				ProtectRoutes:         []string{"/foo", "/bar", "/baz"},
+				ProtectFileExtensions: []string{"jp2", "json"},
+				ExcludeRoutes:         []string{},
 			},
 			path:     "/foo/bar/data.html",
 			expected: true,
@@ -333,29 +337,52 @@ func TestRouteIsProtected(t *testing.T) {
 		{
 			name: "subpath route protection",
 			config: Config{
-				ProtectRoutes:         []string{"/foo"},
+				ProtectRoutes:         []string{"/foo", "/bar", "/baz"},
 				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{},
 			},
-			path:     "/foo/any/route",
+			path:     "/bar/any/route",
 			expected: true,
-		},
-		{
-			name: "No routes protected",
-			config: Config{
-				ProtectRoutes:         []string{},
-				ProtectFileExtensions: []string{},
-			},
-			path:     "/any/route",
-			expected: false,
 		},
 		{
 			name: "File extension in unprotected route",
 			config: Config{
-				ProtectRoutes:         []string{"/protected"},
-				ProtectFileExtensions: []string{"css", "js"},
+				ProtectRoutes:         []string{"/foo", "/bar", "/baz"},
+				ProtectFileExtensions: []string{"jp2", "json"},
+				ExcludeRoutes:         []string{},
 			},
-			path:     "/unprotected/script.js",
+			path:     "/unprotected/script.json",
 			expected: false,
+		},
+		{
+			name: "Excluded route not protected (exact match)",
+			config: Config{
+				ProtectRoutes:         []string{"/"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{"/ajax"},
+			},
+			path:     "/ajax",
+			expected: false,
+		},
+		{
+			name: "Excluded route not protected (prefix match)",
+			config: Config{
+				ProtectRoutes:         []string{"/foo"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{"/ajax"},
+			},
+			path:     "/ajax/foo",
+			expected: false,
+		},
+		{
+			name: "Excluded route protected (no prefix match)",
+			config: Config{
+				ProtectRoutes:         []string{"/"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{"/ajax"},
+			},
+			path:     "/not-ajax",
+			expected: true,
 		},
 	}
 
@@ -363,6 +390,7 @@ func TestRouteIsProtected(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := CreateConfig()
 			c.ProtectRoutes = append(c.ProtectRoutes, tt.config.ProtectRoutes...)
+			c.ExcludeRoutes = append(c.ExcludeRoutes, tt.config.ExcludeRoutes...)
 			c.ProtectFileExtensions = append(c.ProtectFileExtensions, tt.config.ProtectFileExtensions...)
 			bc := &CaptchaProtect{
 				config: c,
