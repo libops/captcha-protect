@@ -74,31 +74,24 @@ type captchaResponse struct {
 
 func CreateConfig() *Config {
 	return &Config{
-		RateLimit:          20,
-		Window:             86400,
-		IPv4SubnetMask:     16,
-		IPv6SubnetMask:     64,
-		IPForwardedHeader:  "",
-		ProtectParameters:  "false",
-		ProtectRoutes:      []string{},
-		ExcludeRoutes:      []string{},
-		ProtectHttpMethods: []string{},
-		ProtectFileExtensions: []string{
-			"html",
-		},
-		GoodBots: []string{},
-		ExemptIPs: []string{
-			"127.0.0.0/8",
-			"10.0.0.0/8",
-			"172.16.0.0/12",
-			"192.168.0.0/16",
-			"fc00::/8",
-		},
-		ChallengeURL:    "/challenge",
-		ChallengeTmpl:   "challenge.tmpl.html",
-		EnableStatsPage: "false",
-		LogLevel:        "INFO",
-		IPDepth:         0,
+		RateLimit:             20,
+		Window:                86400,
+		IPv4SubnetMask:        16,
+		IPv6SubnetMask:        64,
+		IPForwardedHeader:     "",
+		ProtectParameters:     "false",
+		ProtectRoutes:         []string{},
+		ExcludeRoutes:         []string{},
+		ProtectHttpMethods:    []string{},
+		ProtectFileExtensions: []string{},
+		GoodBots:              []string{},
+		ExemptIPs:             []string{},
+		ChallengeURL:          "/challenge",
+		ChallengeTmpl:         "challenge.tmpl.html",
+		EnableStatsPage:       "false",
+		LogLevel:              "INFO",
+		IPDepth:               0,
+		CaptchaProvider:       "turnstile",
 	}
 }
 
@@ -156,9 +149,21 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		}
 	}
 
+	if !strInSlice("html", config.ProtectFileExtensions) {
+		config.ProtectFileExtensions = append(config.ProtectFileExtensions, "html")
+	}
+
 	// transform exempt IP strings into what go can easily parse (net.IPNet)
 	var ips []*net.IPNet
-	for _, ip := range config.ExemptIPs {
+	exemptIps := []string{
+		"127.0.0.0/8",
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"fc00::/8",
+	}
+	exemptIps = append(exemptIps, config.ExemptIPs...)
+	for _, ip := range exemptIps {
 		parsedIp, err := ParseCIDR(ip)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing cidr %s: %v", ip, err)

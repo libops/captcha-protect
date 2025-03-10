@@ -395,8 +395,9 @@ func TestRouteIsProtected(t *testing.T) {
 			c.ProtectRoutes = append(c.ProtectRoutes, tt.config.ProtectRoutes...)
 			c.ExcludeRoutes = append(c.ExcludeRoutes, tt.config.ExcludeRoutes...)
 			c.ProtectFileExtensions = append(c.ProtectFileExtensions, tt.config.ProtectFileExtensions...)
-			bc := &CaptchaProtect{
-				config: c,
+			bc, err := NewCaptchaProtect(context.Background(), nil, c, "captcha-protect")
+			if err != nil {
+				t.Errorf("unexpected error %v", err)
 			}
 
 			result := bc.RouteIsProtected(tt.path)
@@ -411,7 +412,6 @@ func TestGetClientIP(t *testing.T) {
 	tests := []struct {
 		name        string
 		config      Config
-		exemptIps   []*net.IPNet
 		headerValue string
 		remoteAddr  string
 		expectedIP  string
@@ -422,7 +422,6 @@ func TestGetClientIP(t *testing.T) {
 				IPForwardedHeader: "X-Forwarded-For",
 				IPDepth:           0,
 			},
-			exemptIps:   []*net.IPNet{},
 			headerValue: "1.1.1.1, 2.2.2.2",
 			remoteAddr:  "3.3.3.3:1234",
 			expectedIP:  "2.2.2.2",
@@ -432,8 +431,8 @@ func TestGetClientIP(t *testing.T) {
 			config: Config{
 				IPForwardedHeader: "X-Forwarded-For",
 				IPDepth:           0,
+				ExemptIPs:         []string{"2.2.2.2/32"},
 			},
-			exemptIps:   []*net.IPNet{parseCIDR("2.2.2.2/32", t)},
 			headerValue: "1.1.1.1, 3.3.3.3, 2.2.2.2",
 			remoteAddr:  "3.3.3.3:1234",
 			expectedIP:  "3.3.3.3",
@@ -444,7 +443,6 @@ func TestGetClientIP(t *testing.T) {
 				IPForwardedHeader: "X-Forwarded-For",
 				IPDepth:           1,
 			},
-			exemptIps:   []*net.IPNet{},
 			headerValue: "1.1.1.1, 2.2.2.2, 3.3.3.3, 127.0.0.1, 192.168.0.1",
 			remoteAddr:  "3.3.3.3:1234",
 			expectedIP:  "2.2.2.2",
@@ -455,7 +453,6 @@ func TestGetClientIP(t *testing.T) {
 				IPForwardedHeader: "X-Forwarded-For",
 				IPDepth:           1,
 			},
-			exemptIps:   []*net.IPNet{},
 			headerValue: "1.1.1.1, 2.2.2.2, 3.3.3.3",
 			remoteAddr:  "3.3.3.3:1234",
 			expectedIP:  "2.2.2.2",
@@ -465,8 +462,8 @@ func TestGetClientIP(t *testing.T) {
 			config: Config{
 				IPForwardedHeader: "X-Forwarded-For",
 				IPDepth:           0,
+				ExemptIPs:         []string{"2.2.0.0/16"},
 			},
-			exemptIps:   []*net.IPNet{parseCIDR("2.2.0.0/16", t)},
 			headerValue: "127.0.0.1, 192.168.1.1, 172.16.1.2, 2.2.3.4",
 			remoteAddr:  "4.4.4.4:5678",
 			expectedIP:  "4.4.4.4",
@@ -477,7 +474,6 @@ func TestGetClientIP(t *testing.T) {
 				IPForwardedHeader: "X-Forwarded-For",
 				IPDepth:           0,
 			},
-			exemptIps:   []*net.IPNet{},
 			headerValue: "",
 			remoteAddr:  "4.4.4.4:5678",
 			expectedIP:  "4.4.4.4",
@@ -488,7 +484,6 @@ func TestGetClientIP(t *testing.T) {
 				IPDepth:           0,
 				IPForwardedHeader: "",
 			},
-			exemptIps:   []*net.IPNet{},
 			headerValue: "shouldBeIgnored",
 			remoteAddr:  "5.5.5.5:4321",
 			expectedIP:  "5.5.5.5",
@@ -506,16 +501,12 @@ func TestGetClientIP(t *testing.T) {
 			c := CreateConfig()
 			c.IPForwardedHeader = tc.config.IPForwardedHeader
 			c.IPDepth = tc.config.IPDepth
-			exemptIps := tc.exemptIps
-			bc := &CaptchaProtect{
-				config:   c,
-				ipv4Mask: net.CIDRMask(16, 32),
-				ipv6Mask: net.CIDRMask(64, 128),
+			c.ProtectRoutes = []string{"/"}
+			c.ExemptIPs = tc.config.ExemptIPs
+			bc, err := NewCaptchaProtect(context.Background(), nil, c, "captcha-protect")
+			if err != nil {
+				t.Errorf("unexpected error %v", err)
 			}
-			for _, ip := range c.ExemptIPs {
-				exemptIps = append(exemptIps, parseCIDR(ip, t))
-			}
-			bc.exemptIps = exemptIps
 
 			ip, _ := bc.getClientIP(req)
 			if ip != tc.expectedIP {
