@@ -536,7 +536,11 @@ func parseCIDR(cidr string, t *testing.T) *net.IPNet {
 func TestServeHTTP(t *testing.T) {
 	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(http.StatusOK)
-		rw.Write([]byte("next"))
+		_, err := rw.Write([]byte("next"))
+		if err != nil {
+			slog.Error("problems", "err", err)
+			os.Exit(1)
+		}
 	})
 	config := CreateConfig()
 	tests := []struct {
