@@ -1,11 +1,14 @@
 package captcha_protect
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -528,4 +531,62 @@ func parseCIDR(cidr string, t *testing.T) *net.IPNet {
 		t.Fatalf("Failed to parse CIDR %s: %v", cidr, err)
 	}
 	return block
+}
+
+func TestServeHTTP(t *testing.T) {
+	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+		_, err := rw.Write([]byte("next"))
+		if err != nil {
+			slog.Error("problems", "err", err)
+			os.Exit(1)
+		}
+	})
+	config := CreateConfig()
+	tests := []struct {
+		name           string
+		rateLimit      uint
+		expectedStatus uint
+		challengePage  string
+		expectedBody   string
+	}{
+		{
+			name:           "Redirect to 302",
+			rateLimit:      0,
+			challengePage:  "/challenge",
+			expectedStatus: http.StatusFound,
+			expectedBody:   "/challenge?destination=%2Fsomepath",
+		},
+		{
+			name:           "429 on same page",
+			rateLimit:      0,
+			challengePage:  "",
+			expectedStatus: http.StatusTooManyRequests,
+			expectedBody:   "One moment while we verify your network connection",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config.RateLimit = tc.rateLimit
+			config.CaptchaProvider = "turnstile"
+			config.ProtectRoutes = []string{"/"}
+			config.ChallengeURL = tc.challengePage
+			config.ExemptIPs = []string{}
+			cp, err := NewCaptchaProtect(context.Background(), next, config, "captcha-protect")
+			if err != nil {
+				t.Errorf("unexpected error %v", err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/somepath", nil)
+			req.RequestURI = "/somepath"
+			rr := httptest.NewRecorder()
+			cp.ServeHTTP(rr, req)
+			if rr.Code != int(tc.expectedStatus) {
+				t.Errorf("expected %d got %d", tc.expectedStatus, rr.Code)
+			}
+			body := rr.Body.String()
+			if !strings.Contains(body, tc.expectedBody) {
+				t.Errorf("expected %s got %s", tc.expectedBody, body)
+			}
+		})
+	}
 }

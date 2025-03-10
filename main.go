@@ -103,6 +103,10 @@ func CreateConfig() *Config {
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+	return NewCaptchaProtect(ctx, next, config, name)
+}
+
+func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, name string) (*CaptchaProtect, error) {
 	var logLevel slog.LevelVar
 	logLevel.Set(slog.LevelInfo)
 	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
@@ -121,6 +125,10 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	if len(config.ProtectRoutes) == 0 {
 		return nil, fmt.Errorf("you must protect at least one route with the protectRoutes config value. / will cover your entire site")
+	}
+
+	if config.ChallengeURL == "/" {
+		return nil, fmt.Errorf("your challenge URL can not be the entire site. Default is `/challenge`. A blank value will have challenges presented on the visit that trips the rate limit")
 	}
 
 	if len(config.ProtectHttpMethods) == 0 {
@@ -220,10 +228,26 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	clientIP, ipRange := bc.getClientIP(req)
+	challengeOnPage := bc.ChallengeOnPage()
+	if challengeOnPage && req.Method == http.MethodPost {
+		response := req.FormValue(bc.captchaConfig.key + "-response")
+		if response == "" {
+			if !strInSlice(req.Method, bc.config.ProtectHttpMethods) {
+				bc.next.ServeHTTP(rw, req)
+				return
+			}
+		} else {
+			statusCode := bc.verifyChallengePage(rw, req, clientIP)
+			log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "status", statusCode, "useragent", req.UserAgent())
+			return
+		}
+	}
+
 	if req.URL.Path == bc.config.ChallengeURL {
 		if req.Method == http.MethodGet {
-			log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "useragent", req.UserAgent())
-			bc.serveChallengePage(rw, req)
+			destination := req.URL.Query().Get("destination")
+			log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "destination", destination, "useragent", req.UserAgent())
+			bc.serveChallengePage(rw, destination)
 		} else if req.Method == http.MethodPost {
 			statusCode := bc.verifyChallengePage(rw, req, clientIP)
 			log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "status", statusCode, "useragent", req.UserAgent())
@@ -243,30 +267,40 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 	bc.registerRequest(ipRange)
 
-	if bc.trippedRateLimit(ipRange) {
-		encodedURI := url.QueryEscape(req.RequestURI)
-		url := fmt.Sprintf("%s?destination=%s", bc.config.ChallengeURL, encodedURI)
-		http.Redirect(rw, req, url, http.StatusFound)
-	} else {
+	if !bc.trippedRateLimit(ipRange) {
 		bc.next.ServeHTTP(rw, req)
+		return
 	}
+
+	if bc.ChallengeOnPage() {
+		log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "useragent", req.UserAgent())
+		bc.serveChallengePage(rw, req.URL.Path)
+		return
+	}
+	encodedURI := url.QueryEscape(req.RequestURI)
+	url := fmt.Sprintf("%s?destination=%s", bc.config.ChallengeURL, encodedURI)
+	http.Redirect(rw, req, url, http.StatusFound)
 }
 
-func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, req *http.Request) {
+func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, destination string) {
 	d := map[string]string{
 		"SiteKey":      bc.config.SiteKey,
 		"FrontendJS":   bc.captchaConfig.js,
 		"FrontendKey":  bc.captchaConfig.key,
 		"ChallengeURL": bc.config.ChallengeURL,
-		"Destination":  req.URL.Query().Get("destination"),
+		"Destination":  destination,
 	}
+	status := http.StatusOK
+	if bc.ChallengeOnPage() {
+		status = http.StatusTooManyRequests
+	}
+	rw.WriteHeader(status)
+
 	err := bc.tmpl.Execute(rw, d)
 	if err != nil {
 		log.Error("Unable to execute go template", "tmpl", bc.config.ChallengeTmpl, "err", err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
-		return
 	}
-	rw.WriteHeader(http.StatusOK)
 }
 
 func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.Request, ip string) int {
@@ -699,4 +733,8 @@ func strInSlice(s string, sl []string) bool {
 		}
 	}
 	return false
+}
+
+func (bc *CaptchaProtect) ChallengeOnPage() bool {
+	return bc.config.ChallengeURL == ""
 }
