@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/template"
 	"time"
@@ -149,7 +150,7 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		}
 	}
 
-	if !strInSlice("html", config.ProtectFileExtensions) {
+	if !slices.Contains(config.ProtectFileExtensions, "html") {
 		config.ProtectFileExtensions = append(config.ProtectFileExtensions, "html")
 	}
 
@@ -237,7 +238,7 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if challengeOnPage && req.Method == http.MethodPost {
 		response := req.FormValue(bc.captchaConfig.key + "-response")
 		if response == "" {
-			if !strInSlice(req.Method, bc.config.ProtectHttpMethods) {
+			if !slices.Contains(bc.config.ProtectHttpMethods, req.Method) {
 				bc.next.ServeHTTP(rw, req)
 				return
 			}
@@ -380,7 +381,7 @@ func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
 }
 
 func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
-	if !strInSlice(req.Method, bc.config.ProtectHttpMethods) {
+	if !slices.Contains(bc.config.ProtectHttpMethods, req.Method) {
 		return false
 	}
 
@@ -729,15 +730,6 @@ func getDefaultTmpl() string {
     </script>
   </body>
 </html>`
-}
-
-func strInSlice(s string, sl []string) bool {
-	for _, a := range sl {
-		if a == s {
-			return true
-		}
-	}
-	return false
 }
 
 func (bc *CaptchaProtect) ChallengeOnPage() bool {
