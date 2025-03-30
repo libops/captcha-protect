@@ -91,7 +91,8 @@ services:
 
 | **Parameter**           | **Type (Required)**     | **Default**              | **Description**                                                                                                                                                                                  |
 |-------------------------|-------------------------|--------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `protectRoutes`         | `[]string` (required)   | `""`                     | Comma-separated list of route prefixes to protect. e.g., `"/"` protects the entire site (including file/js/css downloads, which you likely don't want). `"/browse"` protects its subtree.        |
+| `mode`                  | `string`                | `prefix`                 | Must be: `prefix`, `suffix`, `regex`. Matching does not include query parameters. `excludeRoutes` always uses `prefix` except when `mode: regex`. Only use `regex` when needed                   |
+| `protectRoutes`         | `[]string` (required)   | `""`                     | Comma-separated list of route prefixes/suffixes/regex patterns to protect.                                                                                                                       |
 | `excludeRoutes`         | `[]string`              | `""`                     | Comma-separated list of route prefixes to **never** protect. e.g., `protectRoutes: "/"` protects the entire site. `excludeRoutes: "/ajax"` would never challenge any route starting with `/ajax` |
 | `captchaProvider`       | `string` (required)     | `""`                     | The captcha type to use. Supported values: `turnstile`, `hcaptcha`, and `recaptcha`.                                                                                                             |
 | `siteKey`               | `string` (required)     | `""`                     | The captcha site key.                                                                                                                                                                            |
@@ -165,3 +166,50 @@ When you override the challenge template, the process probably looks like:
 - the original implementation of this logic was [a drupal module called turnstile_protect](https://www.drupal.org/project/turnstile_protect). This traefik plugin was made to make the challenge logic even more perfomant than that Drupal module, and also to provide this bot protection to non-Drupal websites
 - making general captcha structs to support multiple providers was based on the work in [crowdsec-bouncer-traefik-plugin](https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin)
 - in memory cache thanks to https://github.com/patrickmn/go-cache
+
+## When to enable regex
+
+When possible, you want to keep regex disabled as seen in the example benchmark below.
+
+However, when needed it can be enabled with `mode: regex`
+
+```
+$ go mod init bench
+$ cat << EOF > bench_test.go
+package main
+
+import (
+	"regexp"
+	"strings"
+	"testing"
+)
+
+var (
+	testPath = "/api/v1/user/profile"
+	prefix   = "/api/v1"
+	regex    = regexp.MustCompile("^/api/v1")
+)
+
+func BenchmarkHasPrefix(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = strings.HasPrefix(testPath, prefix)
+	}
+}
+
+func BenchmarkRegexMatch(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = regex.MatchString(testPath)
+	}
+}
+EOF
+$ go test -bench=. -benchmem
+```
+
+```
+goos: darwin
+goarch: amd64
+cpu: Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz
+BenchmarkHasPrefix-12     	340856451	         3.415 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRegexMatch-12    	27992568	        41.20 ns/op	       0 B/op	       0 allocs/op
+PASS
+```

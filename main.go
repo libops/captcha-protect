@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"text/template"
@@ -47,6 +48,9 @@ type Config struct {
 	EnableStatsPage       string   `json:"enableStatsPage"`
 	LogLevel              string   `json:"loglevel,omitempty"`
 	PersistentStateFile   string   `json:"persistentStateFile"`
+	Mode                  string   `json:"mode"`
+	protectRoutesRegex    []*regexp.Regexp
+	excludeRoutesRegex    []*regexp.Regexp
 }
 
 type CaptchaProtect struct {
@@ -93,6 +97,9 @@ func CreateConfig() *Config {
 		LogLevel:              "INFO",
 		IPDepth:               0,
 		CaptchaProvider:       "turnstile",
+		Mode:                  "prefix",
+		protectRoutesRegex:    []*regexp.Regexp{},
+		excludeRoutesRegex:    []*regexp.Regexp{},
 	}
 }
 
@@ -117,8 +124,27 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	expiration := time.Duration(config.Window) * time.Second
 	log.Debug("Captcha config", "config", config)
 
-	if len(config.ProtectRoutes) == 0 {
+	if len(config.ProtectRoutes) == 0 && config.Mode != "suffix" {
 		return nil, fmt.Errorf("you must protect at least one route with the protectRoutes config value. / will cover your entire site")
+	}
+
+	if config.Mode == "regex" {
+		for _, r := range config.ProtectRoutes {
+			cr, err := regexp.Compile(r)
+			if err != nil {
+				return nil, fmt.Errorf("invalid regex in protectRoutes: %s", r)
+			}
+			config.protectRoutesRegex = append(config.protectRoutesRegex, cr)
+		}
+		for _, r := range config.ExcludeRoutes {
+			cr, err := regexp.Compile(r)
+			if err != nil {
+				return nil, fmt.Errorf("invalid regex in excludeRoutes: %s", r)
+			}
+			config.excludeRoutesRegex = append(config.excludeRoutesRegex, cr)
+		}
+	} else if config.Mode != "prefix" && config.Mode != "suffix" {
+		return nil, fmt.Errorf("unknown mode: %s. Supported values are prefix, suffix, and regex.", config.Mode)
 	}
 
 	if config.ChallengeURL == "/" {
@@ -398,10 +424,18 @@ func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
 		return false
 	}
 
-	return bc.RouteIsProtected(req.URL.Path)
+	if bc.config.Mode == "regex" {
+		return bc.RouteIsProtectedRegex(req.URL.Path)
+	}
+
+	if bc.config.Mode == "suffix" {
+		return bc.RouteIsProtectedSuffix(req.URL.Path)
+	}
+
+	return bc.RouteIsProtectedPrefix(req.URL.Path)
 }
 
-func (bc *CaptchaProtect) RouteIsProtected(path string) bool {
+func (bc *CaptchaProtect) RouteIsProtectedPrefix(path string) bool {
 protected:
 	for _, route := range bc.config.ProtectRoutes {
 		if !strings.HasPrefix(path, route) {
@@ -425,6 +459,73 @@ protected:
 		// if we have a file extension, see if we should protect this file extension type
 		for _, protectedExtensions := range bc.config.ProtectFileExtensions {
 			if strings.EqualFold(ext, protectedExtensions) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (bc *CaptchaProtect) RouteIsProtectedSuffix(path string) bool {
+protected:
+	for _, route := range bc.config.ProtectRoutes {
+		cleanPath := path
+		ext := filepath.Ext(path)
+		if ext != "" {
+			cleanPath = strings.TrimSuffix(path, ext)
+		}
+		if !strings.HasSuffix(cleanPath, route) {
+			continue
+		}
+
+		// we're on a protected route - make sure this route doesn't have an exclusion
+		for _, eRoute := range bc.config.ExcludeRoutes {
+			if strings.HasPrefix(cleanPath, eRoute) {
+				continue protected
+			}
+		}
+
+		// if this path isn't a file, go ahead and mark this path as protected
+		ext = strings.TrimPrefix(ext, ".")
+		if ext == "" {
+			return true
+		}
+
+		// if we have a file extension, see if we should protect this file extension type
+		for _, protectedExtensions := range bc.config.ProtectFileExtensions {
+			if strings.EqualFold(ext, protectedExtensions) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (bc *CaptchaProtect) RouteIsProtectedRegex(path string) bool {
+protected:
+	for _, routeRegex := range bc.config.protectRoutesRegex {
+		matched := routeRegex.MatchString(path)
+		if !matched {
+			continue
+		}
+
+		for _, excludeRegex := range bc.config.excludeRoutesRegex {
+			excluded := excludeRegex.MatchString(path)
+			if excluded {
+				continue protected
+			}
+		}
+
+		ext := filepath.Ext(path)
+		ext = strings.TrimPrefix(ext, ".")
+		if ext == "" {
+			return true
+		}
+
+		for _, protectedExtension := range bc.config.ProtectFileExtensions {
+			if strings.EqualFold(ext, protectedExtension) {
 				return true
 			}
 		}
