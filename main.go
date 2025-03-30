@@ -130,10 +130,18 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 
 	if config.Mode == "regex" {
 		for _, r := range config.ProtectRoutes {
-			config.protectRoutesRegex = append(config.protectRoutesRegex, regexp.MustCompile(r))
+			cr, err := regexp.Compile(r)
+			if err != nil {
+				return nil, fmt.Errorf("invalid regex in protectRoutes: %s", r)
+			}
+			config.protectRoutesRegex = append(config.protectRoutesRegex, cr)
 		}
 		for _, r := range config.ExcludeRoutes {
-			config.excludeRoutesRegex = append(config.excludeRoutesRegex, regexp.MustCompile(r))
+			cr, err := regexp.Compile(r)
+			if err != nil {
+				return nil, fmt.Errorf("invalid regex in excludeRoutes: %s", r)
+			}
+			config.excludeRoutesRegex = append(config.excludeRoutesRegex, cr)
 		}
 	} else if config.Mode != "prefix" && config.Mode != "suffix" {
 		return nil, fmt.Errorf("unknown mode: %s. Supported values are prefix, suffix, and regex.", config.Mode)
