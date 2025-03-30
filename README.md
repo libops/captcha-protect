@@ -202,7 +202,7 @@ func BenchmarkRegexMatch(b *testing.B) {
 	}
 }
 EOF
-$go test -bench=. -benchmem
+$ go test -bench=. -benchmem
 ```
 
 ```
