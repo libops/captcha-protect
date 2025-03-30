@@ -91,7 +91,6 @@ services:
 
 | **Parameter**           | **Type (Required)**     | **Default**              | **Description**                                                                                                                                                                                  |
 |-------------------------|-------------------------|--------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `useRegex`              | `bool`                  | `false`                  | When set to `false`, `protectRoutes` and `excludeRoutes` match on prefix. When set to `true`. Both include and exclude routes must be regex. For performance, set to `false` when possible       |
 | `mode`                  | `string`                | `prefix`                 | Must be: `prefix`, `suffix`, `regex`. Matching does not include query parameters. `excludeRoutes` always uses `prefix` except when `mode: regex`. Only use `regex` when needed                   |
 | `protectRoutes`         | `[]string` (required)   | `""`                     | Comma-separated list of route prefixes to protect. e.g., `"/"` protects the entire site (including file/js/css downloads, which you likely don't want). `"/browse"` protects its subtree.        |
 | `excludeRoutes`         | `[]string`              | `""`                     | Comma-separated list of route prefixes to **never** protect. e.g., `protectRoutes: "/"` protects the entire site. `excludeRoutes: "/ajax"` would never challenge any route starting with `/ajax` |
@@ -172,7 +171,7 @@ When you override the challenge template, the process probably looks like:
 
 When possible, you want to keep regex disabled as seen in the example benchmark below.
 
-However, when needed it can be enabled with `useRegex: true`
+However, when needed it can be enabled with `mode: regex`
 
 ```
 $ go mod init bench
