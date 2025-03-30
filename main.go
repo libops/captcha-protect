@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"text/template"
@@ -47,6 +48,9 @@ type Config struct {
 	EnableStatsPage       string   `json:"enableStatsPage"`
 	LogLevel              string   `json:"loglevel,omitempty"`
 	PersistentStateFile   string   `json:"persistentStateFile"`
+	UseRegex              bool     `json:"useRegex"`
+	protectRoutesRegex    []*regexp.Regexp
+	excludeRoutesRegex    []*regexp.Regexp
 }
 
 type CaptchaProtect struct {
@@ -93,6 +97,9 @@ func CreateConfig() *Config {
 		LogLevel:              "INFO",
 		IPDepth:               0,
 		CaptchaProvider:       "turnstile",
+		UseRegex:              false,
+		protectRoutesRegex:    []*regexp.Regexp{},
+		excludeRoutesRegex:    []*regexp.Regexp{},
 	}
 }
 
@@ -121,6 +128,14 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		return nil, fmt.Errorf("you must protect at least one route with the protectRoutes config value. / will cover your entire site")
 	}
 
+	if config.UseRegex {
+		for _, r := range config.ProtectRoutes {
+			config.protectRoutesRegex = append(config.protectRoutesRegex, regexp.MustCompile(r))
+		}
+		for _, r := range config.ExcludeRoutes {
+			config.excludeRoutesRegex = append(config.excludeRoutesRegex, regexp.MustCompile(r))
+		}
+	}
 	if config.ChallengeURL == "/" {
 		return nil, fmt.Errorf("your challenge URL can not be the entire site. Default is `/challenge`. A blank value will have challenges presented on the visit that trips the rate limit")
 	}
@@ -398,6 +413,10 @@ func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
 		return false
 	}
 
+	if bc.config.UseRegex {
+		return bc.RouteIsProtectedRegex(req.URL.Path)
+	}
+
 	return bc.RouteIsProtected(req.URL.Path)
 }
 
@@ -425,6 +444,37 @@ protected:
 		// if we have a file extension, see if we should protect this file extension type
 		for _, protectedExtensions := range bc.config.ProtectFileExtensions {
 			if strings.EqualFold(ext, protectedExtensions) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (bc *CaptchaProtect) RouteIsProtectedRegex(path string) bool {
+protected:
+	for _, routeRegex := range bc.config.protectRoutesRegex {
+		matched := routeRegex.MatchString(path)
+		if !matched {
+			continue
+		}
+
+		for _, excludeRegex := range bc.config.excludeRoutesRegex {
+			excluded := excludeRegex.MatchString(path)
+			if excluded {
+				continue protected
+			}
+		}
+
+		ext := filepath.Ext(path)
+		ext = strings.TrimPrefix(ext, ".")
+		if ext == "" {
+			return true
+		}
+
+		for _, protectedExtension := range bc.config.ProtectFileExtensions {
+			if strings.EqualFold(ext, protectedExtension) {
 				return true
 			}
 		}

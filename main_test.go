@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -390,22 +391,50 @@ func TestRouteIsProtected(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := CreateConfig()
-			c.ProtectRoutes = append(c.ProtectRoutes, tt.config.ProtectRoutes...)
-			c.ExcludeRoutes = append(c.ExcludeRoutes, tt.config.ExcludeRoutes...)
-			c.ProtectFileExtensions = append(c.ProtectFileExtensions, tt.config.ProtectFileExtensions...)
-			bc, err := NewCaptchaProtect(context.Background(), nil, c, "captcha-protect")
-			if err != nil {
-				t.Errorf("unexpected error %v", err)
+		for _, useRegex := range []bool{false, true} {
+			mode := "prefix"
+			if useRegex {
+				mode = "regex"
 			}
 
-			result := bc.RouteIsProtected(tt.path)
-			if result != tt.expected {
-				t.Errorf("RouteIsProtected(%q) = %v; want %v", tt.path, result, tt.expected)
-			}
-		})
+			t.Run(tt.name+"_"+mode, func(t *testing.T) {
+				c := CreateConfig()
+				c.UseRegex = useRegex
+				c.ProtectFileExtensions = append(c.ProtectFileExtensions, tt.config.ProtectFileExtensions...)
+
+				if useRegex {
+					// Convert each route to ^... regex for "HasPrefix" behavior
+					for _, route := range tt.config.ProtectRoutes {
+						c.ProtectRoutes = append(c.ProtectRoutes, "^"+regexp.QuoteMeta(route))
+					}
+					for _, exclude := range tt.config.ExcludeRoutes {
+						c.ExcludeRoutes = append(c.ExcludeRoutes, "^"+regexp.QuoteMeta(exclude))
+					}
+				} else {
+					c.ProtectRoutes = append(c.ProtectRoutes, tt.config.ProtectRoutes...)
+					c.ExcludeRoutes = append(c.ExcludeRoutes, tt.config.ExcludeRoutes...)
+				}
+
+				bc, err := NewCaptchaProtect(context.Background(), nil, c, "captcha-protect")
+				if err != nil {
+					t.Errorf("unexpected error %v", err)
+				}
+
+				if useRegex {
+					result := bc.RouteIsProtectedRegex(tt.path)
+					if result != tt.expected {
+						t.Errorf("RouteIsProtected(%q) = %v; want %v (mode: %s)", tt.path, result, tt.expected, mode)
+					}
+				} else {
+					result := bc.RouteIsProtected(tt.path)
+					if result != tt.expected {
+						t.Errorf("RouteIsProtected(%q) = %v; want %v (mode: %s)", tt.path, result, tt.expected, mode)
+					}
+				}
+			})
+		}
 	}
+
 }
 
 func TestGetClientIP(t *testing.T) {
