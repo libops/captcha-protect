@@ -208,7 +208,6 @@ $ go test -bench=. -benchmem
 ```
 goos: darwin
 goarch: amd64
-pkg: github.com/libops/captcha-protect/heh
 cpu: Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz
 BenchmarkHasPrefix-12     	340856451	         3.415 ns/op	       0 B/op	       0 allocs/op
 BenchmarkRegexMatch-12    	27992568	        41.20 ns/op	       0 B/op	       0 allocs/op
