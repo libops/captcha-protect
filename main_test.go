@@ -399,7 +399,7 @@ func TestRouteIsProtected(t *testing.T) {
 
 			t.Run(tt.name+"_"+mode, func(t *testing.T) {
 				c := CreateConfig()
-				c.UseRegex = useRegex
+				c.Mode = mode
 				c.ProtectFileExtensions = append(c.ProtectFileExtensions, tt.config.ProtectFileExtensions...)
 
 				if useRegex {
@@ -426,7 +426,7 @@ func TestRouteIsProtected(t *testing.T) {
 						t.Errorf("RouteIsProtected(%q) = %v; want %v (mode: %s)", tt.path, result, tt.expected, mode)
 					}
 				} else {
-					result := bc.RouteIsProtected(tt.path)
+					result := bc.RouteIsProtectedPrefix(tt.path)
 					if result != tt.expected {
 						t.Errorf("RouteIsProtected(%q) = %v; want %v (mode: %s)", tt.path, result, tt.expected, mode)
 					}

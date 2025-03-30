@@ -48,7 +48,7 @@ type Config struct {
 	EnableStatsPage       string   `json:"enableStatsPage"`
 	LogLevel              string   `json:"loglevel,omitempty"`
 	PersistentStateFile   string   `json:"persistentStateFile"`
-	UseRegex              bool     `json:"useRegex"`
+	Mode                  string   `json:"mode"`
 	protectRoutesRegex    []*regexp.Regexp
 	excludeRoutesRegex    []*regexp.Regexp
 }
@@ -97,7 +97,7 @@ func CreateConfig() *Config {
 		LogLevel:              "INFO",
 		IPDepth:               0,
 		CaptchaProvider:       "turnstile",
-		UseRegex:              false,
+		Mode:                  "prefix",
 		protectRoutesRegex:    []*regexp.Regexp{},
 		excludeRoutesRegex:    []*regexp.Regexp{},
 	}
@@ -128,14 +128,17 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		return nil, fmt.Errorf("you must protect at least one route with the protectRoutes config value. / will cover your entire site")
 	}
 
-	if config.UseRegex {
+	if config.Mode == "regex" {
 		for _, r := range config.ProtectRoutes {
 			config.protectRoutesRegex = append(config.protectRoutesRegex, regexp.MustCompile(r))
 		}
 		for _, r := range config.ExcludeRoutes {
 			config.excludeRoutesRegex = append(config.excludeRoutesRegex, regexp.MustCompile(r))
 		}
+	} else if config.Mode != "prefix" && config.Mode != "suffix" {
+		return nil, fmt.Errorf("unknown mode: %s. Supported values are prefix, suffix, and regex.", config.Mode)
 	}
+
 	if config.ChallengeURL == "/" {
 		return nil, fmt.Errorf("your challenge URL can not be the entire site. Default is `/challenge`. A blank value will have challenges presented on the visit that trips the rate limit")
 	}
@@ -413,17 +416,53 @@ func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
 		return false
 	}
 
-	if bc.config.UseRegex {
+	if bc.config.Mode == "regex" {
 		return bc.RouteIsProtectedRegex(req.URL.Path)
 	}
 
-	return bc.RouteIsProtected(req.URL.Path)
+	if bc.config.Mode == "suffix" {
+		return bc.RouteIsProtectedSuffix(req.URL.Path)
+	}
+
+	return bc.RouteIsProtectedPrefix(req.URL.Path)
 }
 
-func (bc *CaptchaProtect) RouteIsProtected(path string) bool {
+func (bc *CaptchaProtect) RouteIsProtectedPrefix(path string) bool {
 protected:
 	for _, route := range bc.config.ProtectRoutes {
 		if !strings.HasPrefix(path, route) {
+			continue
+		}
+
+		// we're on a protected route - make sure this route doesn't have an exclusion
+		for _, eRoute := range bc.config.ExcludeRoutes {
+			if strings.HasPrefix(path, eRoute) {
+				continue protected
+			}
+		}
+
+		// if this path isn't a file, go ahead and mark this path as protected
+		ext := filepath.Ext(path)
+		ext = strings.TrimPrefix(ext, ".")
+		if ext == "" {
+			return true
+		}
+
+		// if we have a file extension, see if we should protect this file extension type
+		for _, protectedExtensions := range bc.config.ProtectFileExtensions {
+			if strings.EqualFold(ext, protectedExtensions) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (bc *CaptchaProtect) RouteIsProtectedSuffix(path string) bool {
+protected:
+	for _, route := range bc.config.ProtectRoutes {
+		if !strings.HasSuffix(path, route) {
 			continue
 		}
 
