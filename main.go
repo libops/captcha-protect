@@ -124,7 +124,7 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	expiration := time.Duration(config.Window) * time.Second
 	log.Debug("Captcha config", "config", config)
 
-	if len(config.ProtectRoutes) == 0 {
+	if len(config.ProtectRoutes) == 0 && config.Mode != "suffix" {
 		return nil, fmt.Errorf("you must protect at least one route with the protectRoutes config value. / will cover your entire site")
 	}
 
@@ -462,19 +462,23 @@ protected:
 func (bc *CaptchaProtect) RouteIsProtectedSuffix(path string) bool {
 protected:
 	for _, route := range bc.config.ProtectRoutes {
-		if !strings.HasSuffix(path, route) {
+		cleanPath := path
+		ext := filepath.Ext(path)
+		if ext != "" {
+			cleanPath = strings.TrimSuffix(path, ext)
+		}
+		if !strings.HasSuffix(cleanPath, route) {
 			continue
 		}
 
 		// we're on a protected route - make sure this route doesn't have an exclusion
 		for _, eRoute := range bc.config.ExcludeRoutes {
-			if strings.HasPrefix(path, eRoute) {
+			if strings.HasPrefix(cleanPath, eRoute) {
 				continue protected
 			}
 		}
 
 		// if this path isn't a file, go ahead and mark this path as protected
-		ext := filepath.Ext(path)
 		ext = strings.TrimPrefix(ext, ".")
 		if ext == "" {
 			return true

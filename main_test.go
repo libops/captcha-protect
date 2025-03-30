@@ -437,6 +437,105 @@ func TestRouteIsProtected(t *testing.T) {
 
 }
 
+func TestRouteIsProtectedSuffix(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   Config
+		path     string
+		expected bool
+	}{
+		{
+			name: "Protected route - suffix match",
+			config: Config{
+				ProtectRoutes:         []string{"baz"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{},
+			},
+			path:     "/baz",
+			expected: true,
+		},
+		{
+			name: "Unprotected route - no suffix match",
+			config: Config{
+				ProtectRoutes:         []string{"baz"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{},
+			},
+			path:     "/foo/bar",
+			expected: false,
+		},
+		{
+			name: "Protected route with file extension",
+			config: Config{
+				ProtectRoutes:         []string{"style"},
+				ProtectFileExtensions: []string{"json"},
+				ExcludeRoutes:         []string{},
+			},
+			path:     "/foo/bar/style.json",
+			expected: true,
+		},
+		{
+			name: "Protected by extension only",
+			config: Config{
+				ProtectRoutes:         []string{"index"},
+				ProtectFileExtensions: []string{"html"},
+				ExcludeRoutes:         []string{},
+			},
+			path:     "/whatever/index.html",
+			expected: true,
+		},
+		{
+			name: "Suffix protected route",
+			config: Config{
+				ProtectRoutes:         []string{"route"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{},
+			},
+			path:     "/bar/any/route",
+			expected: true,
+		},
+		{
+			name: "Excluded route - suffix match",
+			config: Config{
+				ProtectRoutes:         []string{"ajax"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{"/api"},
+			},
+			path:     "/api/ajax",
+			expected: false,
+		},
+		{
+			name: "Protected route - not excluded",
+			config: Config{
+				ProtectRoutes:         []string{"ajax"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{"notajax"},
+			},
+			path:     "/real/ajax",
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := CreateConfig()
+			c.ProtectRoutes = append(c.ProtectRoutes, tt.config.ProtectRoutes...)
+			c.ExcludeRoutes = append(c.ExcludeRoutes, tt.config.ExcludeRoutes...)
+			c.Mode = "suffix"
+			c.ProtectFileExtensions = append(c.ProtectFileExtensions, tt.config.ProtectFileExtensions...)
+			bc, err := NewCaptchaProtect(context.Background(), nil, c, "captcha-protect")
+			if err != nil {
+				t.Errorf("unexpected error %v", err)
+			}
+
+			result := bc.RouteIsProtectedSuffix(tt.path)
+			if result != tt.expected {
+				t.Errorf("RouteIsProtectedSuffix(%q) = %v; want %v", tt.path, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestGetClientIP(t *testing.T) {
 	tests := []struct {
 		name        string
