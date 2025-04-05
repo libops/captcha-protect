@@ -50,22 +50,22 @@ type Config struct {
 	LogLevel              string   `json:"loglevel,omitempty"`
 	PersistentStateFile   string   `json:"persistentStateFile"`
 	Mode                  string   `json:"mode"`
-	protectRoutesRegex    []*regexp.Regexp
-	excludeRoutesRegex    []*regexp.Regexp
 }
 
 type CaptchaProtect struct {
-	next          http.Handler
-	name          string
-	config        *Config
-	rateCache     *lru.Cache
-	verifiedCache *lru.Cache
-	botCache      *lru.Cache
-	captchaConfig CaptchaConfig
-	exemptIps     []*net.IPNet
-	tmpl          *template.Template
-	ipv4Mask      net.IPMask
-	ipv6Mask      net.IPMask
+	next               http.Handler
+	name               string
+	config             *Config
+	rateCache          *lru.Cache
+	verifiedCache      *lru.Cache
+	botCache           *lru.Cache
+	captchaConfig      CaptchaConfig
+	exemptIps          []*net.IPNet
+	tmpl               *template.Template
+	ipv4Mask           net.IPMask
+	ipv6Mask           net.IPMask
+	protectRoutesRegex []*regexp.Regexp
+	excludeRoutesRegex []*regexp.Regexp
 }
 
 type CaptchaConfig struct {
@@ -99,8 +99,6 @@ func CreateConfig() *Config {
 		IPDepth:               0,
 		CaptchaProvider:       "turnstile",
 		Mode:                  "prefix",
-		protectRoutesRegex:    []*regexp.Regexp{},
-		excludeRoutesRegex:    []*regexp.Regexp{},
 	}
 }
 
@@ -128,21 +126,22 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	if len(config.ProtectRoutes) == 0 && config.Mode != "suffix" {
 		return nil, fmt.Errorf("you must protect at least one route with the protectRoutes config value. / will cover your entire site")
 	}
-
+	protectRoutesRegex := []*regexp.Regexp{}
+	excludeRoutesRegex := []*regexp.Regexp{}
 	if config.Mode == "regex" {
 		for _, r := range config.ProtectRoutes {
 			cr, err := regexp.Compile(r)
 			if err != nil {
 				return nil, fmt.Errorf("invalid regex in protectRoutes: %s", r)
 			}
-			config.protectRoutesRegex = append(config.protectRoutesRegex, cr)
+			protectRoutesRegex = append(protectRoutesRegex, cr)
 		}
 		for _, r := range config.ExcludeRoutes {
 			cr, err := regexp.Compile(r)
 			if err != nil {
 				return nil, fmt.Errorf("invalid regex in excludeRoutes: %s", r)
 			}
-			config.excludeRoutesRegex = append(config.excludeRoutesRegex, cr)
+			excludeRoutesRegex = append(excludeRoutesRegex, cr)
 		}
 	} else if config.Mode != "prefix" && config.Mode != "suffix" {
 		return nil, fmt.Errorf("unknown mode: %s. Supported values are prefix, suffix, and regex.", config.Mode)
@@ -200,14 +199,16 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	}
 
 	bc := CaptchaProtect{
-		next:          next,
-		name:          name,
-		config:        config,
-		rateCache:     lru.New(expiration, 1*time.Minute),
-		botCache:      lru.New(expiration, 1*time.Hour),
-		verifiedCache: lru.New(expiration, 1*time.Hour),
-		exemptIps:     ips,
-		tmpl:          t,
+		next:               next,
+		name:               name,
+		config:             config,
+		rateCache:          lru.New(expiration, 1*time.Minute),
+		botCache:           lru.New(expiration, 1*time.Hour),
+		verifiedCache:      lru.New(expiration, 1*time.Hour),
+		exemptIps:          ips,
+		tmpl:               t,
+		protectRoutesRegex: protectRoutesRegex,
+		excludeRoutesRegex: excludeRoutesRegex,
 	}
 
 	err = bc.SetIpv4Mask(config.IPv4SubnetMask)
@@ -506,13 +507,13 @@ protected:
 
 func (bc *CaptchaProtect) RouteIsProtectedRegex(path string) bool {
 protected:
-	for _, routeRegex := range bc.config.protectRoutesRegex {
+	for _, routeRegex := range bc.protectRoutesRegex {
 		matched := routeRegex.MatchString(path)
 		if !matched {
 			continue
 		}
 
-		for _, excludeRegex := range bc.config.excludeRoutesRegex {
+		for _, excludeRegex := range bc.excludeRoutesRegex {
 			excluded := excludeRegex.MatchString(path)
 			if excluded {
 				continue protected
