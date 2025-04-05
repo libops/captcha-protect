@@ -522,3 +522,32 @@ func TestServeHTTP(t *testing.T) {
 		})
 	}
 }
+
+func TestIsGoodUserAgent(t *testing.T) {
+	tests := []struct {
+		name             string
+		exemptUserAgents []string
+		ua               string
+		expected         bool
+	}{
+		{"Matching first prefix", []string{"Mozilla", "Google"}, "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", true},
+		{"Matching second prefix", []string{"Bing", "Edge"}, "Edge/12.0", true},
+		{"Case insensitive", []string{"bing", "Edge"}, "BING/12.0", true},
+		{"No matching prefix", []string{"Mozilla", "Google"}, "Safari/537.36", false},
+		{"Empty user agent", []string{"Mozilla", "Google"}, "", false},
+		{"Empty exempt list", []string{}, "Mozilla/5.0", false},
+	}
+	config := CreateConfig()
+	config.ProtectRoutes = []string{"/"}
+	for _, tc := range tests {
+		config.ExemptUserAgents = tc.exemptUserAgents
+		cp, err := NewCaptchaProtect(context.Background(), nil, config, "captcha-protect")
+		if err != nil {
+			t.Errorf("unexpected error %v", err)
+		}
+		got := cp.isGoodUserAgent(tc.ua)
+		if got != tc.expected {
+			t.Errorf("%s: expected %v, got %v", tc.name, tc.expected, got)
+		}
+	}
+}
