@@ -1,4 +1,4 @@
-package tmpl
+package helper
 
 // need to hardcode a default template
 // given yaegi's constraints on finding files on disk
