@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/libops/captcha-protect/internal/state"
+	"github.com/libops/captcha-protect/internal/tmpl"
 	lru "github.com/patrickmn/go-cache"
 )
 
@@ -159,18 +160,18 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	}
 	config.ParseHttpMethods()
 
-	var tmpl *template.Template
+	var t *template.Template
 	if _, err := os.Stat(config.ChallengeTmpl); os.IsNotExist(err) {
 		log.Warn("Unable to find template file. Using default template.", "challengeTmpl", config.ChallengeTmpl)
-		ts := getDefaultTmpl()
-		tmpl, err = template.New("challenge").Parse(ts)
+		ts := tmpl.GetDefaultTmpl()
+		t, err = template.New("challenge").Parse(ts)
 		if err != nil {
 			return nil, fmt.Errorf("unable to parse challenge template: %v", err)
 		}
 	} else if err != nil {
 		return nil, fmt.Errorf("error checking for template file %s: %v", config.ChallengeTmpl, err)
 	} else {
-		tmpl, err = template.ParseFiles(config.ChallengeTmpl)
+		t, err = template.ParseFiles(config.ChallengeTmpl)
 		if err != nil {
 			return nil, fmt.Errorf("unable to parse challenge template file %s: %v", config.ChallengeTmpl, err)
 		}
@@ -206,7 +207,7 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		botCache:      lru.New(expiration, 1*time.Hour),
 		verifiedCache: lru.New(expiration, 1*time.Hour),
 		exemptIps:     ips,
-		tmpl:          tmpl,
+		tmpl:          t,
 	}
 
 	err = bc.SetIpv4Mask(config.IPv4SubnetMask)
@@ -797,40 +798,6 @@ func (bc *CaptchaProtect) loadState() {
 	}
 
 	log.Info("Loaded previous state")
-}
-
-func getDefaultTmpl() string {
-	return `<html>
-  <head>
-    <title>Verifying connection</title>
-    <script src="{{ .FrontendJS }}" async defer referrerpolicy="no-referrer"></script>
-  </head>
-  <body>
-    <h1>Verifying connection</h1>
-    <p>One moment while we verify your network connection.</p>
-    <form action="{{ .ChallengeURL }}" method="post" id="captcha-form" accept-charset="UTF-8">
-        <div
-            data-callback="captchaCallback"
-            class="{{ .FrontendKey }}"
-            data-sitekey="{{ .SiteKey }}"
-            data-theme="auto"
-            data-size="normal"
-            data-language="auto"
-            data-retry="auto"
-            interval="8000"
-            data-appearance="always">
-        </div>
-        <input type="hidden" name="destination" value="{{ .Destination }}">
-    </form>
-    <script type="text/javascript">
-        function captchaCallback(token) {
-            setTimeout(function() {
-                document.getElementById("captcha-form").submit();
-            }, 1000);
-        }
-    </script>
-  </body>
-</html>`
 }
 
 func (bc *CaptchaProtect) ChallengeOnPage() bool {
