@@ -15,6 +15,7 @@ import (
 	"time"
 
 	cp "github.com/libops/captcha-protect"
+	"github.com/libops/captcha-protect/internal/helper"
 )
 
 var (
@@ -118,7 +119,7 @@ func randomPublicIP(config *cp.Config) string {
 			rand.Intn(254)+1,
 		)
 
-		if !cp.IsIpExcluded(ip, exemptIps) && !cp.IsIpGoodBot(ip, config.GoodBots) {
+		if !helper.IsIpExcluded(ip, exemptIps) && !helper.IsIpGoodBot(ip, config.GoodBots) {
 			return ip
 		}
 	}

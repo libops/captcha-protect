@@ -16,14 +16,15 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/libops/captcha-protect/internal/helper"
+	plog "github.com/libops/captcha-protect/internal/log"
 	"github.com/libops/captcha-protect/internal/state"
+
 	lru "github.com/patrickmn/go-cache"
 )
 
 var (
-	lookupAddrFunc = net.LookupAddr
-	lookupIPFunc   = net.LookupIP
-	log            *slog.Logger
+	log *slog.Logger
 )
 
 type Config struct {
@@ -49,22 +50,22 @@ type Config struct {
 	LogLevel              string   `json:"loglevel,omitempty"`
 	PersistentStateFile   string   `json:"persistentStateFile"`
 	Mode                  string   `json:"mode"`
-	protectRoutesRegex    []*regexp.Regexp
-	excludeRoutesRegex    []*regexp.Regexp
 }
 
 type CaptchaProtect struct {
-	next          http.Handler
-	name          string
-	config        *Config
-	rateCache     *lru.Cache
-	verifiedCache *lru.Cache
-	botCache      *lru.Cache
-	captchaConfig CaptchaConfig
-	exemptIps     []*net.IPNet
-	tmpl          *template.Template
-	ipv4Mask      net.IPMask
-	ipv6Mask      net.IPMask
+	next               http.Handler
+	name               string
+	config             *Config
+	rateCache          *lru.Cache
+	verifiedCache      *lru.Cache
+	botCache           *lru.Cache
+	captchaConfig      CaptchaConfig
+	exemptIps          []*net.IPNet
+	tmpl               *template.Template
+	ipv4Mask           net.IPMask
+	ipv6Mask           net.IPMask
+	protectRoutesRegex []*regexp.Regexp
+	excludeRoutesRegex []*regexp.Regexp
 }
 
 type CaptchaConfig struct {
@@ -98,8 +99,6 @@ func CreateConfig() *Config {
 		IPDepth:               0,
 		CaptchaProvider:       "turnstile",
 		Mode:                  "prefix",
-		protectRoutesRegex:    []*regexp.Regexp{},
-		excludeRoutesRegex:    []*regexp.Regexp{},
 	}
 }
 
@@ -108,18 +107,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 }
 
 func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, name string) (*CaptchaProtect, error) {
-	var logLevel slog.LevelVar
-	logLevel.Set(slog.LevelInfo)
-	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: &logLevel,
-	})
-	log = slog.New(handler)
-
-	level, err := ParseLogLevel(config.LogLevel)
-	if err != nil {
-		log.Warn("Unknown log level", "err", err)
-	}
-	logLevel.Set(level)
+	log = plog.New(config.LogLevel)
 
 	expiration := time.Duration(config.Window) * time.Second
 	log.Debug("Captcha config", "config", config)
@@ -128,20 +116,22 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		return nil, fmt.Errorf("you must protect at least one route with the protectRoutes config value. / will cover your entire site")
 	}
 
+	protectRoutesRegex := []*regexp.Regexp{}
+	excludeRoutesRegex := []*regexp.Regexp{}
 	if config.Mode == "regex" {
 		for _, r := range config.ProtectRoutes {
 			cr, err := regexp.Compile(r)
 			if err != nil {
 				return nil, fmt.Errorf("invalid regex in protectRoutes: %s", r)
 			}
-			config.protectRoutesRegex = append(config.protectRoutesRegex, cr)
+			protectRoutesRegex = append(protectRoutesRegex, cr)
 		}
 		for _, r := range config.ExcludeRoutes {
 			cr, err := regexp.Compile(r)
 			if err != nil {
 				return nil, fmt.Errorf("invalid regex in excludeRoutes: %s", r)
 			}
-			config.excludeRoutesRegex = append(config.excludeRoutesRegex, cr)
+			excludeRoutesRegex = append(excludeRoutesRegex, cr)
 		}
 	} else if config.Mode != "prefix" && config.Mode != "suffix" {
 		return nil, fmt.Errorf("unknown mode: %s. Supported values are prefix, suffix, and regex.", config.Mode)
@@ -162,7 +152,7 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	var tmpl *template.Template
 	if _, err := os.Stat(config.ChallengeTmpl); os.IsNotExist(err) {
 		log.Warn("Unable to find template file. Using default template.", "challengeTmpl", config.ChallengeTmpl)
-		ts := getDefaultTmpl()
+		ts := helper.GetDefaultTmpl()
 		tmpl, err = template.New("challenge").Parse(ts)
 		if err != nil {
 			return nil, fmt.Errorf("unable to parse challenge template: %v", err)
@@ -191,7 +181,7 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	}
 	exemptIps = append(exemptIps, config.ExemptIPs...)
 	for _, ip := range exemptIps {
-		parsedIp, err := ParseCIDR(ip)
+		parsedIp, err := helper.ParseCIDR(ip)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing cidr %s: %v", ip, err)
 		}
@@ -199,17 +189,19 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	}
 
 	bc := CaptchaProtect{
-		next:          next,
-		name:          name,
-		config:        config,
-		rateCache:     lru.New(expiration, 1*time.Minute),
-		botCache:      lru.New(expiration, 1*time.Hour),
-		verifiedCache: lru.New(expiration, 1*time.Hour),
-		exemptIps:     ips,
-		tmpl:          tmpl,
+		next:               next,
+		name:               name,
+		config:             config,
+		rateCache:          lru.New(expiration, 1*time.Minute),
+		botCache:           lru.New(expiration, 1*time.Hour),
+		verifiedCache:      lru.New(expiration, 1*time.Hour),
+		exemptIps:          ips,
+		tmpl:               tmpl,
+		protectRoutesRegex: protectRoutesRegex,
+		excludeRoutesRegex: excludeRoutesRegex,
 	}
 
-	err = bc.SetIpv4Mask(config.IPv4SubnetMask)
+	err := bc.SetIpv4Mask(config.IPv4SubnetMask)
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +374,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 
 func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
 	// only allow excluded IPs from viewing
-	if !IsIpExcluded(ip, bc.exemptIps) {
+	if !helper.IsIpExcluded(ip, bc.exemptIps) {
 		http.Error(rw, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -416,7 +408,7 @@ func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
 		return false
 	}
 
-	if IsIpExcluded(clientIP, bc.exemptIps) {
+	if helper.IsIpExcluded(clientIP, bc.exemptIps) {
 		return false
 	}
 
@@ -505,13 +497,13 @@ protected:
 
 func (bc *CaptchaProtect) RouteIsProtectedRegex(path string) bool {
 protected:
-	for _, routeRegex := range bc.config.protectRoutesRegex {
+	for _, routeRegex := range bc.protectRoutesRegex {
 		matched := routeRegex.MatchString(path)
 		if !matched {
 			continue
 		}
 
-		for _, excludeRegex := range bc.config.excludeRoutesRegex {
+		for _, excludeRegex := range bc.excludeRoutesRegex {
 			excluded := excludeRegex.MatchString(path)
 			if excluded {
 				continue protected
@@ -528,17 +520,6 @@ protected:
 			if strings.EqualFold(ext, protectedExtension) {
 				return true
 			}
-		}
-	}
-
-	return false
-}
-
-func IsIpExcluded(clientIP string, exemptIps []*net.IPNet) bool {
-	ip := net.ParseIP(clientIP)
-	for _, block := range exemptIps {
-		if block.Contains(ip) {
-			return true
 		}
 	}
 
@@ -574,7 +555,7 @@ func (bc *CaptchaProtect) getClientIP(req *http.Request) (string, string) {
 		ip = ""
 		for i := len(components) - 1; i >= 0; i-- {
 			_ip := strings.TrimSpace(components[i])
-			if IsIpExcluded(_ip, bc.exemptIps) {
+			if helper.IsIpExcluded(_ip, bc.exemptIps) {
 				continue
 			}
 			if depth == 0 {
@@ -654,74 +635,13 @@ func (bc *CaptchaProtect) isGoodBot(req *http.Request, clientIP string) bool {
 		return bot.(bool)
 	}
 
-	v := IsIpGoodBot(clientIP, bc.config.GoodBots)
+	v := helper.IsIpGoodBot(clientIP, bc.config.GoodBots)
 	bc.botCache.Set(clientIP, v, lru.DefaultExpiration)
 	return v
 }
 
-func IsIpGoodBot(clientIP string, goodBots []string) bool {
-	if len(goodBots) == 0 {
-		return false
-	}
-
-	// lookup the hostname for a given IP
-	hostname, err := lookupAddrFunc(clientIP)
-	if err != nil || len(hostname) == 0 {
-		return false
-	}
-
-	// then nslookup that hostname to avoid spoofing
-	resolvedIP, err := lookupIPFunc(hostname[0])
-	if err != nil || len(resolvedIP) == 0 || resolvedIP[0].String() != clientIP {
-		return false
-	}
-
-	// get the sld
-	// will be like 194.114.135.34.bc.googleusercontent.com.
-	// notice the trailing period
-	parts := strings.Split(hostname[0], ".")
-	l := len(parts)
-	if l < 3 {
-		return false
-	}
-	tld := parts[l-2]
-	domain := parts[l-3] + "." + tld
-
-	for _, bot := range goodBots {
-		if domain == bot {
-			return true
-		}
-	}
-
-	return false
-}
-
 func (bc *CaptchaProtect) SetExemptIps(exemptIps []*net.IPNet) {
 	bc.exemptIps = exemptIps
-}
-
-func ParseCIDR(cidr string) (*net.IPNet, error) {
-	_, ipNet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return nil, err
-	}
-	return ipNet, nil
-}
-
-// Map string to slog.Level
-func ParseLogLevel(level string) (slog.Level, error) {
-	switch strings.ToUpper(level) {
-	case "DEBUG":
-		return slog.LevelDebug, nil
-	case "INFO":
-		return slog.LevelInfo, nil
-	case "WARNING", "WARN":
-		return slog.LevelWarn, nil
-	case "ERROR":
-		return slog.LevelError, nil
-	default:
-		return slog.LevelInfo, fmt.Errorf("unknown logl level %s", level)
-	}
 }
 
 // log a warning if protected methods contains an invalid method
@@ -797,40 +717,6 @@ func (bc *CaptchaProtect) loadState() {
 	}
 
 	log.Info("Loaded previous state")
-}
-
-func getDefaultTmpl() string {
-	return `<html>
-  <head>
-    <title>Verifying connection</title>
-    <script src="{{ .FrontendJS }}" async defer referrerpolicy="no-referrer"></script>
-  </head>
-  <body>
-    <h1>Verifying connection</h1>
-    <p>One moment while we verify your network connection.</p>
-    <form action="{{ .ChallengeURL }}" method="post" id="captcha-form" accept-charset="UTF-8">
-        <div
-            data-callback="captchaCallback"
-            class="{{ .FrontendKey }}"
-            data-sitekey="{{ .SiteKey }}"
-            data-theme="auto"
-            data-size="normal"
-            data-language="auto"
-            data-retry="auto"
-            interval="8000"
-            data-appearance="always">
-        </div>
-        <input type="hidden" name="destination" value="{{ .Destination }}">
-    </form>
-    <script type="text/javascript">
-        function captchaCallback(token) {
-            setTimeout(function() {
-                document.getElementById("captcha-form").submit();
-            }, 1000);
-        }
-    </script>
-  </body>
-</html>`
 }
 
 func (bc *CaptchaProtect) ChallengeOnPage() bool {

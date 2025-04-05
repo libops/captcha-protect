@@ -1,5 +1,5 @@
 displayName: Captcha Protect
-summary: Challenge individual IPs in a subnet when traffic spikes are detected from that subnet, using a captcha of your choice for the challenge
+summary: Add an anti-bot challenge to individual IPs in a subnet when traffic spikes are detected from that subnet
 type: middleware
 import: github.com/libops/captcha-protect
 testData:
