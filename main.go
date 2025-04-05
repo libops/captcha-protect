@@ -136,7 +136,7 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 			excludeRoutesRegex = append(excludeRoutesRegex, cr)
 		}
 	} else if config.Mode != "prefix" && config.Mode != "suffix" {
-		return nil, fmt.Errorf("unknown mode: %s. Supported values are prefix, suffix, and regex.", config.Mode)
+		return nil, fmt.Errorf("unknown mode: %s. Supported values are prefix, suffix, and regex", config.Mode)
 	}
 
 	// put exempt user agents in lowercase for quicker comparisons
@@ -223,25 +223,26 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	// set the captcha config based on the provider
 	// thanks to https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin/blob/4708d76854c7ae95fa7313c46fbe21959be2fff1/pkg/captcha/captcha.go#L39-L55
 	// for the struct/idea
-	if config.CaptchaProvider == "hcaptcha" {
+	switch config.CaptchaProvider {
+	case "hcaptcha":
 		bc.captchaConfig = CaptchaConfig{
 			js:       "https://hcaptcha.com/1/api.js",
 			key:      "h-captcha",
 			validate: "https://api.hcaptcha.com/siteverify",
 		}
-	} else if config.CaptchaProvider == "recaptcha" {
+	case "recaptcha":
 		bc.captchaConfig = CaptchaConfig{
 			js:       "https://www.google.com/recaptcha/api.js",
 			key:      "g-recaptcha",
 			validate: "https://www.google.com/recaptcha/api/siteverify",
 		}
-	} else if config.CaptchaProvider == "turnstile" {
+	case "turnstile":
 		bc.captchaConfig = CaptchaConfig{
 			js:       "https://challenges.cloudflare.com/turnstile/v0/api.js",
 			key:      "cf-turnstile",
 			validate: "https://challenges.cloudflare.com/turnstile/v0/siteverify",
 		}
-	} else {
+	default:
 		return nil, fmt.Errorf("invalid captcha provider: %s", config.CaptchaProvider)
 	}
 
@@ -277,14 +278,15 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if req.URL.Path == bc.config.ChallengeURL {
-		if req.Method == http.MethodGet {
+		switch req.Method {
+		case http.MethodGet:
 			destination := req.URL.Query().Get("destination")
 			log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "destination", destination, "useragent", req.UserAgent())
 			bc.serveChallengePage(rw, destination)
-		} else if req.Method == http.MethodPost {
+		case http.MethodPost:
 			statusCode := bc.verifyChallengePage(rw, req, clientIP)
 			log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "status", statusCode, "useragent", req.UserAgent())
-		} else {
+		default:
 			http.Error(rw, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 		return
