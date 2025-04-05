@@ -1,8 +1,28 @@
+version: "2"
 linters:
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - ../../go
+      - ../../../../opt
+      - ./vendor
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
   enable:
     - gofmt
-issues:
-  exclude-dirs:
-    - ../../go
-    - ../../../../opt
-    - ./vendor
+  exclusions:
+    generated: lax
+    paths:
+      - ../../go
+      - ../../../../opt
+      - ./vendor
+      - third_party$
+      - builtin$
+      - examples$
