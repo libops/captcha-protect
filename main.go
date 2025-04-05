@@ -41,6 +41,7 @@ type Config struct {
 	ProtectHttpMethods    []string `json:"protectHttpMethods"`
 	GoodBots              []string `json:"goodBots"`
 	ExemptIPs             []string `json:"exemptIps"`
+	ExemptUserAgents      []string `json:"exemptUserAgents"`
 	ChallengeURL          string   `json:"challengeURL"`
 	ChallengeTmpl         string   `json:"challengeTmpl"`
 	CaptchaProvider       string   `json:"captchaProvider"`
@@ -92,6 +93,7 @@ func CreateConfig() *Config {
 		ProtectFileExtensions: []string{},
 		GoodBots:              []string{},
 		ExemptIPs:             []string{},
+		ExemptUserAgents:      []string{},
 		ChallengeURL:          "/challenge",
 		ChallengeTmpl:         "challenge.tmpl.html",
 		EnableStatsPage:       "false",
@@ -136,6 +138,13 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	} else if config.Mode != "prefix" && config.Mode != "suffix" {
 		return nil, fmt.Errorf("unknown mode: %s. Supported values are prefix, suffix, and regex.", config.Mode)
 	}
+
+	// put exempt user agents in lowercase for quicker comparisons
+	ua := []string{}
+	for _, a := range config.ExemptUserAgents {
+		ua = append(ua, strings.ToLower(a))
+	}
+	config.ExemptUserAgents = ua
 
 	if config.ChallengeURL == "/" {
 		return nil, fmt.Errorf("your challenge URL can not be the entire site. Default is `/challenge`. A blank value will have challenges presented on the visit that trips the rate limit")
@@ -416,6 +425,10 @@ func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
 		return false
 	}
 
+	if bc.isGoodUserAgent(req.UserAgent()) {
+		return false
+	}
+
 	if bc.config.Mode == "regex" {
 		return bc.RouteIsProtectedRegex(req.URL.Path)
 	}
@@ -489,6 +502,17 @@ protected:
 			if strings.EqualFold(ext, protectedExtensions) {
 				return true
 			}
+		}
+	}
+
+	return false
+}
+
+func (bc *CaptchaProtect) isGoodUserAgent(ua string) bool {
+	ua = strings.ToLower(ua)
+	for _, agentPrefix := range bc.config.ExemptUserAgents {
+		if strings.HasPrefix(ua, agentPrefix) {
+			return true
 		}
 	}
 
