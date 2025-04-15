@@ -214,3 +214,16 @@ BenchmarkHasPrefix-12     	340856451	         3.415 ns/op	       0 B/op	       0
 BenchmarkRegexMatch-12    	27992568	        41.20 ns/op	       0 B/op	       0 allocs/op
 PASS
 ```
+
+
+## How to monitor the rate limiter
+
+If you set the `enableStatsPage` to true, it allows `exemptIps` to access /`captcha-protect/stats` to monitor the rate limiter. The key JSON key to look on the stats page is the top level "rate" key, which will list the subnets that are currently forced to be challenged based to request patterns and the `captcha-protect` configuration values used.
+
+If you have use a computer within the `exemptIps`, and access to the command line tools `curl` and `jq`, here is a recipe for how to list the top 25 subnets being challenged...
+
+```bash
+curl -s https://example.com/captcha-protect/stats |   jq -r '.rate | to_entries | sort_by(.value) | .[] | "\(.key): \(.value)"' |   tail -25
+```
+
+This JSON state data is also found in the `state.json` file that you should have configured in your `docker-compose.yml` using the `persistentStateFile` setting and volume definition. NOTE: this file should only be changed by `captcha-protect` and not manually.
