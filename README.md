@@ -227,3 +227,18 @@ curl -s https://example.com/captcha-protect/stats |   jq -r '.rate | to_entries 
 ```
 
 This JSON state data is also found in the `state.json` file that you should have configured in your `docker-compose.yml` using the `persistentStateFile` setting and volume definition. NOTE: this file should only be changed by `captcha-protect` and not manually.
+
+## Troubleshooting
+
+Here is a way to troubleshoot your `captcha-protect` set up.
+
+### Verify that your Turnstile site-key is configured properly
+
+One reason that may cause `captcha-protect` to not work is that the Cloudflare Turnstile widget site-key or private-key are not properly set for `captcha-protect` to access. Below is a way to confirm if the Turnstile site-key is configured correctly. (**WARNING**: There is currently no easy way to check the private-key, since the secret-key should never be displayed on a webpage or shared.)
+1. Visit the `captcha-protect` "challenge" URL which is set to `https://example.com/challenge` by default.
+1. You should see a web page that says "Verifying connection" 
+<br>**NOTE**: If you customized the `challengeTmpl` configuration, the page may say something different.
+1. Look at the HTML source code for the page `https://example.com/challenge`, by right-clicking on the page and selecting "View page source" (on Chrome).
+1. In the HTML source view that opens up, look for a `<Div>` tag that has an attribute named `data-sitekey`, and check if its value matches your Cloudflare Turnstile widget sitekey value. 
+<br>**TIP**: You need to log in to your Cloudflare online account and go to the Turnstile section to see your site-key and secret-key values.
+1. If the site-key value did not match in the HTML `<Div>` tag, then update the `docker-compose.yml` and/or `.env` file to correctly pass the site-key value. Also check if the Cloudflare Turnstile widget secret-key is set correctly.
