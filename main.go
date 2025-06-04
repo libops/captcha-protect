@@ -44,6 +44,7 @@ type Config struct {
 	ExemptUserAgents      []string `json:"exemptUserAgents"`
 	ChallengeURL          string   `json:"challengeURL"`
 	ChallengeTmpl         string   `json:"challengeTmpl"`
+	ChallengeStatusCode   int      `json:"challengeStatusCode"`
 	CaptchaProvider       string   `json:"captchaProvider"`
 	SiteKey               string   `json:"siteKey"`
 	SecretKey             string   `json:"secretKey"`
@@ -96,6 +97,7 @@ func CreateConfig() *Config {
 		ExemptUserAgents:      []string{},
 		ChallengeURL:          "/challenge",
 		ChallengeTmpl:         "challenge.tmpl.html",
+		ChallengeStatusCode:   0,
 		EnableStatsPage:       "false",
 		LogLevel:              "INFO",
 		IPDepth:               0,
@@ -208,6 +210,15 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		tmpl:               tmpl,
 		protectRoutesRegex: protectRoutesRegex,
 		excludeRoutesRegex: excludeRoutesRegex,
+	}
+
+	// if a status code was not configured
+	// retain the default set before this config option was added
+	if config.ChallengeStatusCode == 0 {
+		bc.config.ChallengeStatusCode = http.StatusOK
+		if bc.ChallengeOnPage() {
+			bc.config.ChallengeStatusCode = http.StatusTooManyRequests
+		}
 	}
 
 	err := bc.SetIpv4Mask(config.IPv4SubnetMask)
@@ -325,11 +336,10 @@ func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, destination
 		"ChallengeURL": bc.config.ChallengeURL,
 		"Destination":  destination,
 	}
-	status := http.StatusOK
-	if bc.ChallengeOnPage() {
-		status = http.StatusTooManyRequests
-	}
-	rw.WriteHeader(status)
+
+	// have to write http status before executing the template
+	// otherwise a 200 will get served by the template execution
+	rw.WriteHeader(bc.config.ChallengeStatusCode)
 
 	err := bc.tmpl.Execute(rw, d)
 	if err != nil {
