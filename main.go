@@ -281,20 +281,12 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	clientIP, ipRange := bc.getClientIP(req)
 	challengeOnPage := bc.ChallengeOnPage()
 	if challengeOnPage && req.Method == http.MethodPost {
-		response := req.FormValue(bc.captchaConfig.key + "-response")
-		if response == "" {
-			if !slices.Contains(bc.config.ProtectHttpMethods, req.Method) {
-				bc.next.ServeHTTP(rw, req)
-				return
-			}
-		} else {
+		if req.URL.Query().Get("challenge") != "" {
 			statusCode := bc.verifyChallengePage(rw, req, clientIP)
 			log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "status", statusCode, "useragent", req.UserAgent())
 			return
 		}
-	}
-
-	if req.URL.Path == bc.config.ChallengeURL {
+	} else if req.URL.Path == bc.config.ChallengeURL {
 		switch req.Method {
 		case http.MethodGet:
 			destination := req.URL.Query().Get("destination")
