@@ -337,6 +337,7 @@ func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, destination
 
 	// have to write http status before executing the template
 	// otherwise a 200 will get served by the template execution
+        rw.Header().Set("Connection", "close")
 	rw.WriteHeader(bc.config.ChallengeStatusCode)
 
 	err := bc.tmpl.Execute(rw, d)
