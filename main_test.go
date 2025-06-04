@@ -481,6 +481,7 @@ func TestServeHTTP(t *testing.T) {
 		expectedStatus uint
 		challengePage  string
 		expectedBody   string
+		challengeCode  int
 	}{
 		{
 			name:           "Redirect to 302",
@@ -488,12 +489,30 @@ func TestServeHTTP(t *testing.T) {
 			challengePage:  "/challenge",
 			expectedStatus: http.StatusFound,
 			expectedBody:   "/challenge?destination=%2Fsomepath",
+			challengeCode:  http.StatusOK,
 		},
 		{
-			name:           "429 on same page",
+			name:           "403 when changing default challenge code",
+			rateLimit:      0,
+			challengePage:  "/challenge",
+			expectedStatus: http.StatusFound,
+			challengeCode:  http.StatusForbidden,
+			expectedBody:   "/challenge?destination=%2Fsomepath",
+		},
+		{
+			name:           "429 when challenging on same page",
 			rateLimit:      0,
 			challengePage:  "",
 			expectedStatus: http.StatusTooManyRequests,
+			expectedBody:   "One moment while we verify your network connection",
+			challengeCode:  http.StatusTooManyRequests,
+		},
+		{
+			name:           "403 when challenging on same page",
+			rateLimit:      0,
+			challengePage:  "",
+			expectedStatus: http.StatusForbidden,
+			challengeCode:  http.StatusForbidden,
 			expectedBody:   "One moment while we verify your network connection",
 		},
 	}
@@ -503,6 +522,7 @@ func TestServeHTTP(t *testing.T) {
 			config.CaptchaProvider = "turnstile"
 			config.ProtectRoutes = []string{"/"}
 			config.ChallengeURL = tc.challengePage
+			config.ChallengeStatusCode = tc.challengeCode
 			config.ExemptIPs = []string{}
 			cp, err := NewCaptchaProtect(context.Background(), next, config, "captcha-protect")
 			if err != nil {
@@ -518,6 +538,21 @@ func TestServeHTTP(t *testing.T) {
 			body := rr.Body.String()
 			if !strings.Contains(body, tc.expectedBody) {
 				t.Errorf("expected %s got %s", tc.expectedBody, body)
+			}
+
+			// we're done testing if challenging on same page
+			if tc.challengePage == "" {
+				return
+			}
+
+			// if redirecting, test the /challenge page
+			// and ensure it returns the status we set
+			req = httptest.NewRequest(http.MethodGet, "http://example.com"+tc.challengePage, nil)
+			req.RequestURI = tc.challengePage
+			rr = httptest.NewRecorder()
+			cp.ServeHTTP(rr, req)
+			if rr.Code != int(tc.challengeCode) {
+				t.Errorf("expected %d got %d", tc.challengeCode, rr.Code)
 			}
 		})
 	}
