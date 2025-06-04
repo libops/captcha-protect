@@ -152,6 +152,12 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		return nil, fmt.Errorf("your challenge URL can not be the entire site. Default is `/challenge`. A blank value will have challenges presented on the visit that trips the rate limit")
 	}
 
+	// when challenging on the same page that tripped the rate limiter
+	// add a url parameter to detect on
+	if config.ChallengeURL == "" {
+		config.ChallengeURL = "?challenge=true"
+	}
+
 	if len(config.ProtectHttpMethods) == 0 {
 		config.ProtectHttpMethods = []string{
 			"GET",
@@ -318,12 +324,12 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	encodedURI := url.QueryEscape(req.RequestURI)
 	if bc.ChallengeOnPage() {
 		log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "useragent", req.UserAgent())
-		bc.serveChallengePage(rw, req.URL.Path)
+		bc.serveChallengePage(rw, encodedURI)
 		return
 	}
-	encodedURI := url.QueryEscape(req.RequestURI)
 	url := fmt.Sprintf("%s?destination=%s", bc.config.ChallengeURL, encodedURI)
 	http.Redirect(rw, req, url, http.StatusFound)
 }
@@ -756,5 +762,5 @@ func (bc *CaptchaProtect) loadState() {
 }
 
 func (bc *CaptchaProtect) ChallengeOnPage() bool {
-	return bc.config.ChallengeURL == ""
+	return bc.config.ChallengeURL == "?challenge=true"
 }
