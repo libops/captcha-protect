@@ -50,6 +50,9 @@ services:
             traefik.http.routers.nginx.rule: Host(`${DOMAIN}`)
             traefik.http.services.nginx.loadbalancer.server.port: 80
             traefik.http.routers.nginx.middlewares: captcha-protect@docker
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.rateLimit: 0
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.ipv4subnetMask: 8
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.window: 864000
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectRoutes: "/"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.captchaProvider: turnstile
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.siteKey: ${TURNSTILE_SITE_KEY}
@@ -71,7 +74,7 @@ services:
             --providers.docker=true
             --providers.docker.network=default
             --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
-            --experimental.plugins.captcha-protect.version=v1.8.2
+            --experimental.plugins.captcha-protect.version=v1.9.2
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
