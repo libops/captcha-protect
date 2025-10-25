@@ -1156,10 +1156,13 @@ func TestServeHTTPMethodNotAllowed(t *testing.T) {
 }
 
 func TestLoadStateInvalidJSON(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "invalid.json")
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "invalid.json")
 
 	// Write invalid JSON
-	_ = os.WriteFile(tmpFile, []byte(`{invalid json`), 0644)
+	if err := os.WriteFile(tmpFile, []byte(`{invalid json`), 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
 
 	config := CreateConfig()
 	config.SiteKey = "test"
@@ -1177,6 +1180,9 @@ func TestLoadStateInvalidJSON(t *testing.T) {
 	if bc.rateCache.ItemCount() != 0 {
 		t.Error("Rate cache should be empty after failed load")
 	}
+
+	// Clean up the file before temp dir cleanup
+	_ = os.Remove(tmpFile)
 }
 
 func TestParseHttpMethodsInvalid(t *testing.T) {
