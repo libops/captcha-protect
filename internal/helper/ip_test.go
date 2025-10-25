@@ -191,3 +191,55 @@ func parseCIDR(cidr string, t *testing.T) *net.IPNet {
 	}
 	return block
 }
+
+func TestParseCIDR(t *testing.T) {
+	tests := []struct {
+		name      string
+		cidr      string
+		expectErr bool
+	}{
+		{
+			name:      "Valid IPv4 CIDR",
+			cidr:      "192.168.1.0/24",
+			expectErr: false,
+		},
+		{
+			name:      "Valid IPv6 CIDR",
+			cidr:      "2001:db8::/32",
+			expectErr: false,
+		},
+		{
+			name:      "Invalid CIDR - no mask",
+			cidr:      "192.168.1.0",
+			expectErr: true,
+		},
+		{
+			name:      "Invalid CIDR - bad format",
+			cidr:      "not-a-cidr",
+			expectErr: true,
+		},
+		{
+			name:      "Invalid CIDR - empty string",
+			cidr:      "",
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := ParseCIDR(tt.cidr)
+			if tt.expectErr {
+				if err == nil {
+					t.Errorf("Expected error for CIDR %q, got nil", tt.cidr)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error for CIDR %q: %v", tt.cidr, err)
+				}
+				if result == nil {
+					t.Errorf("Expected non-nil result for valid CIDR %q", tt.cidr)
+				}
+			}
+		})
+	}
+}

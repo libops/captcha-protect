@@ -2,21 +2,18 @@ package captcha_protect
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
-
-func init() {
-	log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-}
 
 func TestParseIp(t *testing.T) {
 	tests := []struct {
@@ -221,6 +218,8 @@ func TestRouteIsProtected(t *testing.T) {
 			t.Run(tt.name+"_"+mode, func(t *testing.T) {
 				c := CreateConfig()
 				c.Mode = mode
+				c.SiteKey = "test-site-key"
+				c.SecretKey = "test-secret-key"
 				c.ProtectFileExtensions = append(c.ProtectFileExtensions, tt.config.ProtectFileExtensions...)
 
 				if useRegex {
@@ -340,6 +339,8 @@ func TestRouteIsProtectedSuffix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := CreateConfig()
+			c.SiteKey = "test-site-key"
+			c.SecretKey = "test-secret-key"
 			c.ProtectRoutes = append(c.ProtectRoutes, tt.config.ProtectRoutes...)
 			c.ExcludeRoutes = append(c.ExcludeRoutes, tt.config.ExcludeRoutes...)
 			c.Mode = "suffix"
@@ -448,6 +449,8 @@ func TestGetClientIP(t *testing.T) {
 			req.RemoteAddr = tc.remoteAddr
 
 			c := CreateConfig()
+			c.SiteKey = "test-site-key"
+			c.SecretKey = "test-secret-key"
 			c.IPForwardedHeader = tc.config.IPForwardedHeader
 			c.IPDepth = tc.config.IPDepth
 			c.ProtectRoutes = []string{"/"}
@@ -518,6 +521,8 @@ func TestServeHTTP(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			config.SiteKey = "test-site-key"
+			config.SecretKey = "test-secret-key"
 			config.RateLimit = tc.rateLimit
 			config.CaptchaProvider = "turnstile"
 			config.ProtectRoutes = []string{"/"}
@@ -573,6 +578,8 @@ func TestIsGoodUserAgent(t *testing.T) {
 		{"Empty exempt list", []string{}, "Mozilla/5.0", false},
 	}
 	config := CreateConfig()
+	config.SiteKey = "test-site-key"
+	config.SecretKey = "test-secret-key"
 	config.ProtectRoutes = []string{"/"}
 	for _, tc := range tests {
 		config.ExemptUserAgents = tc.exemptUserAgents
@@ -584,5 +591,610 @@ func TestIsGoodUserAgent(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("%s: expected %v, got %v", tc.name, tc.expected, got)
 		}
+	}
+}
+
+func TestNewCaptchaProtectValidation(t *testing.T) {
+	tests := []struct {
+		name         string
+		modifyConfig func(*Config)
+		expectError  string
+	}{
+		{
+			name:         "Missing SiteKey",
+			modifyConfig: func(c *Config) { c.SiteKey = "" },
+			expectError:  "siteKey is required",
+		},
+		{
+			name:         "Missing SecretKey",
+			modifyConfig: func(c *Config) { c.SecretKey = "" },
+			expectError:  "secretKey is required",
+		},
+		{
+			name:         "Zero Window",
+			modifyConfig: func(c *Config) { c.Window = 0 },
+			expectError:  "window must be positive",
+		},
+		{
+			name:         "Negative Window",
+			modifyConfig: func(c *Config) { c.Window = -1 },
+			expectError:  "window must be positive",
+		},
+		{
+			name:         "Invalid CAPTCHA Provider",
+			modifyConfig: func(c *Config) { c.CaptchaProvider = "invalid" },
+			expectError:  "invalid captcha provider",
+		},
+		{
+			name: "Invalid regex in ProtectRoutes",
+			modifyConfig: func(c *Config) {
+				c.Mode = "regex"
+				c.ProtectRoutes = []string{"[invalid"}
+			},
+			expectError: "invalid regex in protectRoutes",
+		},
+		{
+			name: "Invalid regex in ExcludeRoutes",
+			modifyConfig: func(c *Config) {
+				c.Mode = "regex"
+				c.ExcludeRoutes = []string{"[invalid"}
+			},
+			expectError: "invalid regex in excludeRoutes",
+		},
+		{
+			name:         "ChallengeURL is /",
+			modifyConfig: func(c *Config) { c.ChallengeURL = "/" },
+			expectError:  "challenge URL can not be the entire site",
+		},
+		{
+			name:         "Invalid mode",
+			modifyConfig: func(c *Config) { c.Mode = "invalid" },
+			expectError:  "unknown mode",
+		},
+		{
+			name:         "Invalid IPv4 mask - too small",
+			modifyConfig: func(c *Config) { c.IPv4SubnetMask = 5 },
+			expectError:  "invalid ipv4 mask",
+		},
+		{
+			name:         "Invalid IPv4 mask - too large",
+			modifyConfig: func(c *Config) { c.IPv4SubnetMask = 33 },
+			expectError:  "invalid ipv4 mask",
+		},
+		{
+			name:         "Invalid IPv6 mask - too small",
+			modifyConfig: func(c *Config) { c.IPv6SubnetMask = 5 },
+			expectError:  "invalid ipv6 mask",
+		},
+		{
+			name:         "Invalid IPv6 mask - too large",
+			modifyConfig: func(c *Config) { c.IPv6SubnetMask = 200 },
+			expectError:  "invalid ipv6 mask",
+		},
+		{
+			name: "Invalid CIDR in ExemptIPs",
+			modifyConfig: func(c *Config) {
+				c.ExemptIPs = []string{"not-a-cidr"}
+			},
+			expectError: "error parsing cidr",
+		},
+		{
+			name:         "No protected routes in prefix mode",
+			modifyConfig: func(c *Config) { c.ProtectRoutes = []string{} },
+			expectError:  "you must protect at least one route",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := CreateConfig()
+			c.SiteKey = "test"
+			c.SecretKey = "test"
+			c.ProtectRoutes = []string{"/"}
+			tt.modifyConfig(c)
+
+			_, err := NewCaptchaProtect(context.Background(), nil, c, "test")
+			if err == nil {
+				t.Errorf("Expected error containing %q, got nil", tt.expectError)
+			} else if !strings.Contains(err.Error(), tt.expectError) {
+				t.Errorf("Expected error containing %q, got %q", tt.expectError, err.Error())
+			}
+		})
+	}
+}
+
+func TestRateLimiting(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.RateLimit = 5
+	config.Window = 10
+
+	bc, err := NewCaptchaProtect(context.Background(), nil, config, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	subnet := "192.168.0.0"
+
+	// Register 5 requests (at rate limit)
+	for i := 0; i < 5; i++ {
+		bc.registerRequest(subnet)
+		if bc.trippedRateLimit(subnet) {
+			t.Errorf("Should not trip rate limit at %d requests", i+1)
+		}
+	}
+
+	// 6th request should trip
+	bc.registerRequest(subnet)
+	if !bc.trippedRateLimit(subnet) {
+		t.Error("Should trip rate limit after exceeding")
+	}
+
+	// Different subnet should not be affected
+	differentSubnet := "10.0.0.0"
+	bc.registerRequest(differentSubnet)
+	if bc.trippedRateLimit(differentSubnet) {
+		t.Error("Different subnet should not be rate limited")
+	}
+}
+
+func TestIsGoodBotWithParameters(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.ProtectParameters = "true"
+	config.GoodBots = []string{"googlebot.com"}
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+
+	// Mock bot cache to simulate good bot
+	bc.botCache.Set("1.2.3.4", true, 1*time.Hour)
+
+	tests := []struct {
+		name     string
+		url      string
+		expected bool
+	}{
+		{"URL without params - good bot allowed", "http://example.com/page", true},
+		{"URL with params - good bot blocked", "http://example.com/page?foo=bar", false},
+		{"URL with multiple params - good bot blocked", "http://example.com/page?foo=bar&baz=qux", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.url, nil)
+			result := bc.isGoodBot(req, "1.2.3.4")
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestVerifiedCacheBypasses(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.RateLimit = 0 // Always challenge unless verified
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+
+	req := httptest.NewRequest("GET", "http://example.com/test", nil)
+	clientIP := "1.2.3.4"
+
+	// Should apply before verification
+	if !bc.shouldApply(req, clientIP) {
+		t.Error("Should apply protection before verification")
+	}
+
+	// Add to verified cache
+	bc.verifiedCache.Set(clientIP, true, 1*time.Hour)
+
+	// Should not apply after verification
+	if bc.shouldApply(req, clientIP) {
+		t.Error("Should not apply protection after verification")
+	}
+}
+
+func TestStatsPage(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.EnableStatsPage = "true"
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+
+	// Add some test data
+	bc.rateCache.Set("192.168.0.0", uint(10), 1*time.Hour)
+	bc.verifiedCache.Set("1.2.3.4", true, 1*time.Hour)
+
+	tests := []struct {
+		name           string
+		clientIP       string
+		expectedStatus int
+	}{
+		{"Exempt IP can access", "192.168.1.1", http.StatusOK},
+		{"Private IP can access", "10.0.0.1", http.StatusOK},
+		{"Non-exempt IP forbidden", "1.2.3.4", http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+
+			bc.serveStatsPage(rr, tt.clientIP)
+
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, rr.Code)
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				// Verify JSON response
+				var stats map[string]interface{}
+				if err := json.Unmarshal(rr.Body.Bytes(), &stats); err != nil {
+					t.Errorf("Failed to parse JSON: %v", err)
+				}
+				// Check that we have expected keys
+				if _, ok := stats["rate"]; !ok {
+					t.Error("Stats JSON missing 'rate' key")
+				}
+				if _, ok := stats["verified"]; !ok {
+					t.Error("Stats JSON missing 'verified' key")
+				}
+			}
+		})
+	}
+}
+
+func TestProtectHttpMethods(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.ProtectHttpMethods = []string{"GET", "POST"}
+	config.RateLimit = 0 // Always challenge
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+
+	tests := []struct {
+		method   string
+		expected bool
+	}{
+		{"GET", true},
+		{"POST", true},
+		{"PUT", false},
+		{"DELETE", false},
+		{"PATCH", false},
+		{"HEAD", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, "http://example.com/test", nil)
+			result := bc.shouldApply(req, "1.2.3.4")
+			if result != tt.expected {
+				t.Errorf("Method %s: expected %v, got %v", tt.method, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestIsExtensionProtected(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.ProtectFileExtensions = []string{"html", "php", "json"}
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+
+	tests := []struct {
+		path     string
+		expected bool
+	}{
+		{"/index.html", true},
+		{"/api.json", true},
+		{"/script.php", true},
+		{"/style.css", false},
+		{"/image.jpg", false},
+		{"/no-extension", true},      // No extension = protected
+		{"/path/to/file.HTML", true}, // Case insensitive
+		{"/path/to/file.JSON", true},
+		{"/path/to/file.Php", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			result := bc.isExtensionProtected(tt.path)
+			if result != tt.expected {
+				t.Errorf("Path %s: expected %v, got %v", tt.path, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestStatePersistence(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "state.json")
+
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.PersistentStateFile = tmpFile
+
+	// Don't pass a context to avoid starting background goroutines
+	bc1, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+
+	// Add some state
+	bc1.rateCache.Set("192.168.0.0", uint(10), 1*time.Hour)
+	bc1.verifiedCache.Set("1.2.3.4", true, 1*time.Hour)
+	bc1.botCache.Set("5.6.7.8", false, 1*time.Hour)
+
+	// Manually save state by writing the file directly
+	// This tests the state format without relying on the background goroutine
+	jsonData, _ := json.Marshal(map[string]interface{}{
+		"rate": map[string]uint{
+			"192.168.0.0": 10,
+		},
+		"verified": map[string]bool{
+			"1.2.3.4": true,
+		},
+		"bots": map[string]bool{
+			"5.6.7.8": false,
+		},
+	})
+	err := os.WriteFile(tmpFile, jsonData, 0644)
+	if err != nil {
+		t.Fatalf("Failed to write state file: %v", err)
+	}
+
+	// Create new instance - should load state
+	bc2, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+
+	// Check rate cache
+	val, found := bc2.rateCache.Get("192.168.0.0")
+	if !found || val.(uint) != 10 {
+		t.Error("Rate cache state not persisted correctly")
+	}
+
+	// Check verified cache
+	_, found = bc2.verifiedCache.Get("1.2.3.4")
+	if !found {
+		t.Error("Verified cache state not persisted correctly")
+	}
+
+	// Check bot cache
+	botVal, found := bc2.botCache.Get("5.6.7.8")
+	if !found || botVal.(bool) != false {
+		t.Error("Bot cache state not persisted correctly")
+	}
+}
+
+func TestVerifyChallengePage(t *testing.T) {
+	tests := []struct {
+		name           string
+		provider       string
+		formValues     map[string]string
+		mockResponse   string
+		expectedStatus int
+		shouldSetCache bool
+	}{
+		{
+			name:           "Missing captcha response",
+			provider:       "turnstile",
+			formValues:     map[string]string{},
+			expectedStatus: http.StatusBadRequest,
+			shouldSetCache: false,
+		},
+		{
+			name:     "Successful verification with destination",
+			provider: "turnstile",
+			formValues: map[string]string{
+				"cf-turnstile-response": "valid-token",
+				"destination":           "%2Fhome",
+			},
+			mockResponse:   `{"success":true}`,
+			expectedStatus: http.StatusFound,
+			shouldSetCache: true,
+		},
+		{
+			name:     "Successful verification without destination",
+			provider: "recaptcha",
+			formValues: map[string]string{
+				"g-recaptcha-response": "valid-token",
+			},
+			mockResponse:   `{"success":true}`,
+			expectedStatus: http.StatusFound,
+			shouldSetCache: true,
+		},
+		{
+			name:     "Failed verification",
+			provider: "hcaptcha",
+			formValues: map[string]string{
+				"h-captcha-response": "invalid-token",
+			},
+			mockResponse:   `{"success":false}`,
+			expectedStatus: http.StatusForbidden,
+			shouldSetCache: false,
+		},
+		{
+			name:     "Invalid destination URL",
+			provider: "turnstile",
+			formValues: map[string]string{
+				"cf-turnstile-response": "valid-token",
+				"destination":           "%ZZ",
+			},
+			mockResponse:   `{"success":true}`,
+			expectedStatus: http.StatusFound,
+			shouldSetCache: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create mock server
+			mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.mockResponse))
+			}))
+			defer mockServer.Close()
+
+			config := CreateConfig()
+			config.SiteKey = "test"
+			config.SecretKey = "test"
+			config.ProtectRoutes = []string{"/"}
+			config.CaptchaProvider = tt.provider
+
+			bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+
+			// Override the validation URL to point to our mock server
+			bc.captchaConfig.validate = mockServer.URL
+
+			// Create request with form values
+			req := httptest.NewRequest("POST", "http://example.com/challenge", nil)
+			req.Form = make(map[string][]string)
+			for k, v := range tt.formValues {
+				req.Form.Set(k, v)
+			}
+
+			rr := httptest.NewRecorder()
+			clientIP := "1.2.3.4"
+
+			status := bc.verifyChallengePage(rr, req, clientIP)
+
+			if status != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, status)
+			}
+
+			// Check if IP was added to verified cache
+			_, found := bc.verifiedCache.Get(clientIP)
+			if found != tt.shouldSetCache {
+				t.Errorf("Expected cache set=%v, got=%v", tt.shouldSetCache, found)
+			}
+		})
+	}
+}
+
+func TestVerifyChallengePageHTTPError(t *testing.T) {
+	// Test HTTP client error
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+
+	// Set invalid URL to trigger HTTP error
+	bc.captchaConfig.validate = "http://invalid-domain-that-does-not-exist-12345.com"
+
+	req := httptest.NewRequest("POST", "http://example.com/challenge", nil)
+	req.Form = make(map[string][]string)
+	req.Form.Set("cf-turnstile-response", "token")
+
+	rr := httptest.NewRecorder()
+	status := bc.verifyChallengePage(rr, req, "1.2.3.4")
+
+	if status != http.StatusInternalServerError {
+		t.Errorf("Expected status %d for HTTP error, got %d", http.StatusInternalServerError, status)
+	}
+}
+
+func TestVerifyChallengePageInvalidJSON(t *testing.T) {
+	// Test invalid JSON response
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{invalid json`))
+	}))
+	defer mockServer.Close()
+
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+	bc.captchaConfig.validate = mockServer.URL
+
+	req := httptest.NewRequest("POST", "http://example.com/challenge", nil)
+	req.Form = make(map[string][]string)
+	req.Form.Set("cf-turnstile-response", "token")
+
+	rr := httptest.NewRecorder()
+	status := bc.verifyChallengePage(rr, req, "1.2.3.4")
+
+	if status != http.StatusInternalServerError {
+		t.Errorf("Expected status %d for JSON error, got %d", http.StatusInternalServerError, status)
+	}
+}
+
+func TestServeHTTPMethodNotAllowed(t *testing.T) {
+	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.ChallengeURL = "/challenge"
+
+	bc, _ := NewCaptchaProtect(context.Background(), next, config, "test")
+
+	req := httptest.NewRequest("DELETE", "http://example.com/challenge", nil)
+	req.RequestURI = "/challenge"
+	rr := httptest.NewRecorder()
+
+	bc.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Expected status %d, got %d", http.StatusMethodNotAllowed, rr.Code)
+	}
+}
+
+func TestLoadStateInvalidJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "invalid.json")
+
+	// Write invalid JSON
+	if err := os.WriteFile(tmpFile, []byte(`{invalid json`), 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.PersistentStateFile = tmpFile
+
+	// Should not panic, just log error
+	bc, err := NewCaptchaProtect(context.Background(), nil, config, "test")
+	if err != nil {
+		t.Errorf("Should not fail on invalid state JSON: %v", err)
+	}
+
+	// Caches should be empty
+	if bc.rateCache.ItemCount() != 0 {
+		t.Error("Rate cache should be empty after failed load")
+	}
+
+	// Clean up the file before temp dir cleanup
+	_ = os.Remove(tmpFile)
+}
+
+func TestParseHttpMethodsInvalid(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.ProtectHttpMethods = []string{"GET", "INVALID_METHOD", "POST"}
+
+	// Should not fail, just log warning
+	_, err := NewCaptchaProtect(context.Background(), nil, config, "test")
+	if err != nil {
+		t.Errorf("Should not fail on invalid HTTP method: %v", err)
 	}
 }
