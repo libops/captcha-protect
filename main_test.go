@@ -12,12 +12,6 @@ import (
 	"testing"
 )
 
-func init() {
-	log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-}
-
 func TestParseIp(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -221,6 +215,8 @@ func TestRouteIsProtected(t *testing.T) {
 			t.Run(tt.name+"_"+mode, func(t *testing.T) {
 				c := CreateConfig()
 				c.Mode = mode
+				c.SiteKey = "test-site-key"
+				c.SecretKey = "test-secret-key"
 				c.ProtectFileExtensions = append(c.ProtectFileExtensions, tt.config.ProtectFileExtensions...)
 
 				if useRegex {
@@ -340,6 +336,8 @@ func TestRouteIsProtectedSuffix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := CreateConfig()
+			c.SiteKey = "test-site-key"
+			c.SecretKey = "test-secret-key"
 			c.ProtectRoutes = append(c.ProtectRoutes, tt.config.ProtectRoutes...)
 			c.ExcludeRoutes = append(c.ExcludeRoutes, tt.config.ExcludeRoutes...)
 			c.Mode = "suffix"
@@ -448,6 +446,8 @@ func TestGetClientIP(t *testing.T) {
 			req.RemoteAddr = tc.remoteAddr
 
 			c := CreateConfig()
+			c.SiteKey = "test-site-key"
+			c.SecretKey = "test-secret-key"
 			c.IPForwardedHeader = tc.config.IPForwardedHeader
 			c.IPDepth = tc.config.IPDepth
 			c.ProtectRoutes = []string{"/"}
@@ -518,6 +518,8 @@ func TestServeHTTP(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			config.SiteKey = "test-site-key"
+			config.SecretKey = "test-secret-key"
 			config.RateLimit = tc.rateLimit
 			config.CaptchaProvider = "turnstile"
 			config.ProtectRoutes = []string{"/"}
@@ -573,6 +575,8 @@ func TestIsGoodUserAgent(t *testing.T) {
 		{"Empty exempt list", []string{}, "Mozilla/5.0", false},
 	}
 	config := CreateConfig()
+	config.SiteKey = "test-site-key"
+	config.SecretKey = "test-secret-key"
 	config.ProtectRoutes = []string{"/"}
 	for _, tc := range tests {
 		config.ExemptUserAgents = tc.exemptUserAgents

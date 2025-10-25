@@ -23,17 +23,14 @@ import (
 	lru "github.com/patrickmn/go-cache"
 )
 
-var (
-	log *slog.Logger
-)
-
 type Config struct {
-	RateLimit             uint     `json:"rateLimit"`
-	Window                int64    `json:"window"`
-	IPv4SubnetMask        int      `json:"ipv4subnetMask"`
-	IPv6SubnetMask        int      `json:"ipv6subnetMask"`
-	IPForwardedHeader     string   `json:"ipForwardedHeader"`
-	IPDepth               int      `json:"ipDepth"`
+	RateLimit         uint   `json:"rateLimit"`
+	Window            int64  `json:"window"`
+	IPv4SubnetMask    int    `json:"ipv4subnetMask"`
+	IPv6SubnetMask    int    `json:"ipv6subnetMask"`
+	IPForwardedHeader string `json:"ipForwardedHeader"`
+	IPDepth           int    `json:"ipDepth"`
+	// ProtectParameters is a string instead of bool due to Traefik's label parsing limitations
 	ProtectParameters     string   `json:"protectParameters"`
 	ProtectRoutes         []string `json:"protectRoutes"`
 	ExcludeRoutes         []string `json:"excludeRoutes"`
@@ -48,16 +45,19 @@ type Config struct {
 	CaptchaProvider       string   `json:"captchaProvider"`
 	SiteKey               string   `json:"siteKey"`
 	SecretKey             string   `json:"secretKey"`
-	EnableStatsPage       string   `json:"enableStatsPage"`
-	LogLevel              string   `json:"loglevel,omitempty"`
-	PersistentStateFile   string   `json:"persistentStateFile"`
-	Mode                  string   `json:"mode"`
+	// EnableStatsPage is a string instead of bool due to Traefik's label parsing limitations
+	EnableStatsPage     string `json:"enableStatsPage"`
+	LogLevel            string `json:"loglevel,omitempty"`
+	PersistentStateFile string `json:"persistentStateFile"`
+	Mode                string `json:"mode"`
 }
 
 type CaptchaProtect struct {
 	next               http.Handler
 	name               string
 	config             *Config
+	log                *slog.Logger
+	httpClient         *http.Client
 	rateCache          *lru.Cache
 	verifiedCache      *lru.Cache
 	botCache           *lru.Cache
@@ -111,7 +111,18 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 }
 
 func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, name string) (*CaptchaProtect, error) {
-	log = plog.New(config.LogLevel)
+	log := plog.New(config.LogLevel)
+
+	// Validate required config
+	if config.SiteKey == "" {
+		return nil, fmt.Errorf("siteKey is required")
+	}
+	if config.SecretKey == "" {
+		return nil, fmt.Errorf("secretKey is required")
+	}
+	if config.Window <= 0 {
+		return nil, fmt.Errorf("window must be positive, got %d", config.Window)
+	}
 
 	expiration := time.Duration(config.Window) * time.Second
 	log.Debug("Captcha config", "config", config)
@@ -164,11 +175,11 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 			"HEAD",
 		}
 	}
-	config.ParseHttpMethods()
+	config.ParseHttpMethods(log)
 
 	var tmpl *template.Template
 	if _, err := os.Stat(config.ChallengeTmpl); os.IsNotExist(err) {
-		log.Warn("Unable to find template file. Using default template.", "challengeTmpl", config.ChallengeTmpl)
+		log.Warn("Unable to find template file. Using default template", "challengeTmpl", config.ChallengeTmpl)
 		ts := helper.GetDefaultTmpl()
 		tmpl, err = template.New("challenge").Parse(ts)
 		if err != nil {
@@ -183,6 +194,8 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		}
 	}
 
+	// Always protect HTML files by default to ensure the main content is rate-limited.
+	// This prevents users from accidentally excluding HTML, which would break the protection.
 	if !slices.Contains(config.ProtectFileExtensions, "html") {
 		config.ProtectFileExtensions = append(config.ProtectFileExtensions, "html")
 	}
@@ -206,9 +219,13 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	}
 
 	bc := CaptchaProtect{
-		next:               next,
-		name:               name,
-		config:             config,
+		next:   next,
+		name:   name,
+		config: config,
+		log:    log,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
 		rateCache:          lru.New(expiration, 1*time.Minute),
 		botCache:           lru.New(expiration, 1*time.Hour),
 		verifiedCache:      lru.New(expiration, 1*time.Hour),
@@ -269,7 +286,7 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		go bc.saveState(childCtx)
 		go func() {
 			<-ctx.Done()
-			log.Debug("Context canceled, calling child cancel...")
+			bc.log.Debug("Context canceled, calling child cancel")
 			cancel()
 		}()
 	}
@@ -283,24 +300,24 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if challengeOnPage && req.Method == http.MethodPost {
 		if req.URL.Query().Get("challenge") != "" {
 			statusCode := bc.verifyChallengePage(rw, req, clientIP)
-			log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "status", statusCode, "useragent", req.UserAgent())
+			bc.log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "status", statusCode, "useragent", req.UserAgent())
 			return
 		}
 	} else if req.URL.Path == bc.config.ChallengeURL {
 		switch req.Method {
 		case http.MethodGet:
 			destination := req.URL.Query().Get("destination")
-			log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "destination", destination, "useragent", req.UserAgent())
+			bc.log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "destination", destination, "useragent", req.UserAgent())
 			bc.serveChallengePage(rw, destination)
 		case http.MethodPost:
 			statusCode := bc.verifyChallengePage(rw, req, clientIP)
-			log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "status", statusCode, "useragent", req.UserAgent())
+			bc.log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "status", statusCode, "useragent", req.UserAgent())
 		default:
 			http.Error(rw, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 		return
 	} else if req.URL.Path == "/captcha-protect/stats" && bc.config.EnableStatsPage == "true" {
-		log.Info("Captcha stats", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "useragent", req.UserAgent())
+		bc.log.Info("Captcha stats", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "useragent", req.UserAgent())
 		bc.serveStatsPage(rw, clientIP)
 		return
 	}
@@ -318,7 +335,7 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	encodedURI := url.QueryEscape(req.RequestURI)
 	if bc.ChallengeOnPage() {
-		log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "useragent", req.UserAgent())
+		bc.log.Info("Captcha challenge", "clientIP", clientIP, "method", req.Method, "path", req.URL.Path, "useragent", req.UserAgent())
 		bc.serveChallengePage(rw, encodedURI)
 		return
 	}
@@ -343,7 +360,7 @@ func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, destination
 
 	err := bc.tmpl.Execute(rw, d)
 	if err != nil {
-		log.Error("Unable to execute go template", "tmpl", bc.config.ChallengeTmpl, "err", err)
+		bc.log.Error("unable to execute go template", "tmpl", bc.config.ChallengeTmpl, "err", err)
 		// Can't change status code here, already written
 		_, _ = rw.Write([]byte("\n<!-- Template execution failed -->"))
 	}
@@ -359,9 +376,9 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	var body = url.Values{}
 	body.Add("secret", bc.config.SecretKey)
 	body.Add("response", response)
-	resp, err := http.PostForm(bc.captchaConfig.validate, body)
+	resp, err := bc.httpClient.PostForm(bc.captchaConfig.validate, body)
 	if err != nil {
-		log.Error("Unable to validate captcha", "url", bc.captchaConfig.validate, "response", response, "err", err)
+		bc.log.Error("unable to validate captcha", "url", bc.captchaConfig.validate, "err", err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
 		return http.StatusInternalServerError
 	}
@@ -370,7 +387,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	var captchaResponse captchaResponse
 	err = json.NewDecoder(resp.Body).Decode(&captchaResponse)
 	if err != nil {
-		log.Error("Unable to unmarshal captcha response", "url", bc.captchaConfig.validate, "err", err)
+		bc.log.Error("unable to unmarshal captcha response", "url", bc.captchaConfig.validate, "err", err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
 		return http.StatusInternalServerError
 	}
@@ -382,7 +399,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 		}
 		u, err := url.QueryUnescape(destination)
 		if err != nil {
-			log.Error("Unable to unescape destination", "destination", destination, "err", err)
+			bc.log.Error("unable to unescape destination", "destination", destination, "err", err)
 			u = "/"
 		}
 		http.Redirect(rw, req, u, http.StatusFound)
@@ -404,7 +421,7 @@ func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
 	state := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
 	jsonData, err := json.Marshal(state)
 	if err != nil {
-		log.Error("failed to marshal JSON", "err", err)
+		bc.log.Error("failed to marshal JSON", "err", err)
 		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -413,7 +430,7 @@ func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
 	rw.WriteHeader(http.StatusOK)
 	_, err = rw.Write(jsonData)
 	if err != nil {
-		log.Error("failed to write JSON on stats request", "err", err)
+		bc.log.Error("failed to write JSON on stats request", "err", err)
 		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -453,6 +470,22 @@ func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
 	return bc.RouteIsProtectedPrefix(req.URL.Path)
 }
 
+// isExtensionProtected checks if a file extension should be protected based on the configured list.
+// Returns true if the path has no extension (likely HTML) or if the extension matches the protected list.
+func (bc *CaptchaProtect) isExtensionProtected(path string) bool {
+	ext := filepath.Ext(path)
+	ext = strings.TrimPrefix(ext, ".")
+	if ext == "" {
+		return true
+	}
+	for _, protectedExt := range bc.config.ProtectFileExtensions {
+		if strings.EqualFold(ext, protectedExt) {
+			return true
+		}
+	}
+	return false
+}
+
 func (bc *CaptchaProtect) RouteIsProtectedPrefix(path string) bool {
 protected:
 	for _, route := range bc.config.ProtectRoutes {
@@ -467,19 +500,7 @@ protected:
 			}
 		}
 
-		// if this path isn't a file, go ahead and mark this path as protected
-		ext := filepath.Ext(path)
-		ext = strings.TrimPrefix(ext, ".")
-		if ext == "" {
-			return true
-		}
-
-		// if we have a file extension, see if we should protect this file extension type
-		for _, protectedExtensions := range bc.config.ProtectFileExtensions {
-			if strings.EqualFold(ext, protectedExtensions) {
-				return true
-			}
-		}
+		return bc.isExtensionProtected(path)
 	}
 
 	return false
@@ -504,18 +525,7 @@ protected:
 			}
 		}
 
-		// if this path isn't a file, go ahead and mark this path as protected
-		ext = strings.TrimPrefix(ext, ".")
-		if ext == "" {
-			return true
-		}
-
-		// if we have a file extension, see if we should protect this file extension type
-		for _, protectedExtensions := range bc.config.ProtectFileExtensions {
-			if strings.EqualFold(ext, protectedExtensions) {
-				return true
-			}
-		}
+		return bc.isExtensionProtected(path)
 	}
 
 	return false
@@ -547,17 +557,7 @@ protected:
 			}
 		}
 
-		ext := filepath.Ext(path)
-		ext = strings.TrimPrefix(ext, ".")
-		if ext == "" {
-			return true
-		}
-
-		for _, protectedExtension := range bc.config.ProtectFileExtensions {
-			if strings.EqualFold(ext, protectedExtension) {
-				return true
-			}
-		}
+		return bc.isExtensionProtected(path)
 	}
 
 	return false
@@ -566,7 +566,7 @@ protected:
 func (bc *CaptchaProtect) trippedRateLimit(ip string) bool {
 	v, ok := bc.rateCache.Get(ip)
 	if !ok {
-		log.Error("IP not found, but should already be set", "ip", ip)
+		bc.log.Error("IP not found, but should already be set", "ip", ip)
 		return false
 	}
 	return v.(uint) > bc.config.RateLimit
@@ -580,7 +580,7 @@ func (bc *CaptchaProtect) registerRequest(ip string) {
 
 	_, err = bc.rateCache.IncrementUint(ip, uint(1))
 	if err != nil {
-		log.Error("Unable to set rate cache", "ip", ip)
+		bc.log.Error("unable to set rate cache", "ip", ip)
 	}
 }
 
@@ -602,18 +602,22 @@ func (bc *CaptchaProtect) getClientIP(req *http.Request) (string, string) {
 			depth--
 		}
 		if ip == "" {
-			log.Debug("No non-exempt IPs in header. req.RemoteAddr", "ipDepth", bc.config.IPDepth, bc.config.IPForwardedHeader, req.Header.Get(bc.config.IPForwardedHeader))
+			bc.log.Debug("No non-exempt IPs in header. req.RemoteAddr", "ipDepth", bc.config.IPDepth, bc.config.IPForwardedHeader, req.Header.Get(bc.config.IPForwardedHeader))
 			ip = req.RemoteAddr
 		}
 	} else {
 		if bc.config.IPForwardedHeader != "" {
-			log.Debug("Received a blank header value. Defaulting to real IP")
+			bc.log.Debug("Received a blank header value. Defaulting to real IP")
 		}
 		ip = req.RemoteAddr
 	}
 	if strings.Contains(ip, ":") {
-		host, _, _ := net.SplitHostPort(ip)
-		ip = host
+		host, _, err := net.SplitHostPort(ip)
+		if err != nil {
+			bc.log.Warn("Failed to parse port from IP", "ip", ip, "err", err)
+		} else {
+			ip = host
+		}
 	}
 
 	return bc.ParseIp(ip)
@@ -637,7 +641,7 @@ func (bc *CaptchaProtect) ParseIp(ip string) (string, string) {
 		return ip, subnet.String()
 	}
 
-	log.Warn("Unknown ip version", "ip", ip)
+	bc.log.Warn("Unknown ip version", "ip", ip)
 
 	return ip, ip
 }
@@ -681,14 +685,15 @@ func (bc *CaptchaProtect) SetExemptIps(exemptIps []*net.IPNet) {
 	bc.exemptIps = exemptIps
 }
 
-// log a warning if protected methods contains an invalid method
-func (c *Config) ParseHttpMethods() {
+// ParseHttpMethods logs a warning if protected methods contains an invalid method.
+// Note: This method is called during initialization, validation is informational only.
+func (c *Config) ParseHttpMethods(log *slog.Logger) {
 	for _, method := range c.ProtectHttpMethods {
 		switch method {
 		case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE":
 			continue
 		default:
-			log.Warn("unknown http method", "method", method)
+			log.Warn("Unknown HTTP method", "method", method)
 		}
 	}
 }
@@ -699,7 +704,7 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 
 	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Error("Unable to save state. Could not open or create file", "stateFile", bc.config.PersistentStateFile, "err", err)
+		bc.log.Error("unable to save state, could not open or create file", "stateFile", bc.config.PersistentStateFile, "err", err)
 		return
 	}
 	// we made sure the file is writable, we can continue in our loop
@@ -708,20 +713,20 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			log.Debug("Saving state")
+			bc.log.Debug("Saving state")
 			state := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
 			jsonData, err := json.Marshal(state)
 			if err != nil {
-				log.Error("failed unmarshalling state data", "err", err)
+				bc.log.Error("failed to marshal state data", "err", err)
 				break
 			}
 			err = os.WriteFile(bc.config.PersistentStateFile, jsonData, 0644)
 			if err != nil {
-				log.Error("failed saving state data", "err", err)
+				bc.log.Error("failed to save state data", "err", err)
 			}
 
 		case <-ctx.Done():
-			log.Debug("Context cancelled, stopping saveState")
+			bc.log.Debug("Context cancelled, stopping saveState")
 			return
 		}
 	}
@@ -730,14 +735,14 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 func (bc *CaptchaProtect) loadState() {
 	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
 	if err != nil || len(fileContent) == 0 {
-		log.Warn("Failed to load state file.", "err", err)
+		bc.log.Warn("failed to load state file", "err", err)
 		return
 	}
 
 	var state state.State
 	err = json.Unmarshal(fileContent, &state)
 	if err != nil {
-		log.Error("Failed to unmarshal state file", "err", err)
+		bc.log.Error("failed to unmarshal state file", "err", err)
 		return
 	}
 
@@ -753,7 +758,7 @@ func (bc *CaptchaProtect) loadState() {
 		bc.verifiedCache.Set(k, v, lru.DefaultExpiration)
 	}
 
-	log.Info("Loaded previous state")
+	bc.log.Info("Loaded previous state")
 }
 
 func (bc *CaptchaProtect) ChallengeOnPage() bool {
