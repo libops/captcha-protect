@@ -902,7 +902,7 @@ func TestIsExtensionProtected(t *testing.T) {
 		{"/script.php", true},
 		{"/style.css", false},
 		{"/image.jpg", false},
-		{"/no-extension", true}, // No extension = protected
+		{"/no-extension", true},      // No extension = protected
 		{"/path/to/file.HTML", true}, // Case insensitive
 		{"/path/to/file.JSON", true},
 		{"/path/to/file.Php", true},
