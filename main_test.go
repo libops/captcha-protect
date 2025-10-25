@@ -974,3 +974,221 @@ func TestStatePersistence(t *testing.T) {
 		t.Error("Bot cache state not persisted correctly")
 	}
 }
+
+func TestVerifyChallengePage(t *testing.T) {
+	tests := []struct {
+		name           string
+		provider       string
+		formValues     map[string]string
+		mockResponse   string
+		expectedStatus int
+		shouldSetCache bool
+	}{
+		{
+			name:           "Missing captcha response",
+			provider:       "turnstile",
+			formValues:     map[string]string{},
+			expectedStatus: http.StatusBadRequest,
+			shouldSetCache: false,
+		},
+		{
+			name:     "Successful verification with destination",
+			provider: "turnstile",
+			formValues: map[string]string{
+				"cf-turnstile-response": "valid-token",
+				"destination":           "%2Fhome",
+			},
+			mockResponse:   `{"success":true}`,
+			expectedStatus: http.StatusFound,
+			shouldSetCache: true,
+		},
+		{
+			name:     "Successful verification without destination",
+			provider: "recaptcha",
+			formValues: map[string]string{
+				"g-recaptcha-response": "valid-token",
+			},
+			mockResponse:   `{"success":true}`,
+			expectedStatus: http.StatusFound,
+			shouldSetCache: true,
+		},
+		{
+			name:     "Failed verification",
+			provider: "hcaptcha",
+			formValues: map[string]string{
+				"h-captcha-response": "invalid-token",
+			},
+			mockResponse:   `{"success":false}`,
+			expectedStatus: http.StatusForbidden,
+			shouldSetCache: false,
+		},
+		{
+			name:     "Invalid destination URL",
+			provider: "turnstile",
+			formValues: map[string]string{
+				"cf-turnstile-response": "valid-token",
+				"destination":           "%ZZ",
+			},
+			mockResponse:   `{"success":true}`,
+			expectedStatus: http.StatusFound,
+			shouldSetCache: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create mock server
+			mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.mockResponse))
+			}))
+			defer mockServer.Close()
+
+			config := CreateConfig()
+			config.SiteKey = "test"
+			config.SecretKey = "test"
+			config.ProtectRoutes = []string{"/"}
+			config.CaptchaProvider = tt.provider
+
+			bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+
+			// Override the validation URL to point to our mock server
+			bc.captchaConfig.validate = mockServer.URL
+
+			// Create request with form values
+			req := httptest.NewRequest("POST", "http://example.com/challenge", nil)
+			req.Form = make(map[string][]string)
+			for k, v := range tt.formValues {
+				req.Form.Set(k, v)
+			}
+
+			rr := httptest.NewRecorder()
+			clientIP := "1.2.3.4"
+
+			status := bc.verifyChallengePage(rr, req, clientIP)
+
+			if status != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, status)
+			}
+
+			// Check if IP was added to verified cache
+			_, found := bc.verifiedCache.Get(clientIP)
+			if found != tt.shouldSetCache {
+				t.Errorf("Expected cache set=%v, got=%v", tt.shouldSetCache, found)
+			}
+		})
+	}
+}
+
+func TestVerifyChallengePageHTTPError(t *testing.T) {
+	// Test HTTP client error
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+
+	// Set invalid URL to trigger HTTP error
+	bc.captchaConfig.validate = "http://invalid-domain-that-does-not-exist-12345.com"
+
+	req := httptest.NewRequest("POST", "http://example.com/challenge", nil)
+	req.Form = make(map[string][]string)
+	req.Form.Set("cf-turnstile-response", "token")
+
+	rr := httptest.NewRecorder()
+	status := bc.verifyChallengePage(rr, req, "1.2.3.4")
+
+	if status != http.StatusInternalServerError {
+		t.Errorf("Expected status %d for HTTP error, got %d", http.StatusInternalServerError, status)
+	}
+}
+
+func TestVerifyChallengePageInvalidJSON(t *testing.T) {
+	// Test invalid JSON response
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{invalid json`))
+	}))
+	defer mockServer.Close()
+
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+	bc.captchaConfig.validate = mockServer.URL
+
+	req := httptest.NewRequest("POST", "http://example.com/challenge", nil)
+	req.Form = make(map[string][]string)
+	req.Form.Set("cf-turnstile-response", "token")
+
+	rr := httptest.NewRecorder()
+	status := bc.verifyChallengePage(rr, req, "1.2.3.4")
+
+	if status != http.StatusInternalServerError {
+		t.Errorf("Expected status %d for JSON error, got %d", http.StatusInternalServerError, status)
+	}
+}
+
+func TestServeHTTPMethodNotAllowed(t *testing.T) {
+	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.ChallengeURL = "/challenge"
+
+	bc, _ := NewCaptchaProtect(context.Background(), next, config, "test")
+
+	req := httptest.NewRequest("DELETE", "http://example.com/challenge", nil)
+	req.RequestURI = "/challenge"
+	rr := httptest.NewRecorder()
+
+	bc.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Expected status %d, got %d", http.StatusMethodNotAllowed, rr.Code)
+	}
+}
+
+func TestLoadStateInvalidJSON(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "invalid.json")
+
+	// Write invalid JSON
+	_ = os.WriteFile(tmpFile, []byte(`{invalid json`), 0644)
+
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.PersistentStateFile = tmpFile
+
+	// Should not panic, just log error
+	bc, err := NewCaptchaProtect(context.Background(), nil, config, "test")
+	if err != nil {
+		t.Errorf("Should not fail on invalid state JSON: %v", err)
+	}
+
+	// Caches should be empty
+	if bc.rateCache.ItemCount() != 0 {
+		t.Error("Rate cache should be empty after failed load")
+	}
+}
+
+func TestParseHttpMethodsInvalid(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.ProtectHttpMethods = []string{"GET", "INVALID_METHOD", "POST"}
+
+	// Should not fail, just log warning
+	_, err := NewCaptchaProtect(context.Background(), nil, config, "test")
+	if err != nil {
+		t.Errorf("Should not fail on invalid HTTP method: %v", err)
+	}
+}
