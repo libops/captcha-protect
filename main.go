@@ -322,8 +322,8 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		bc.serveChallengePage(rw, encodedURI)
 		return
 	}
-	url := fmt.Sprintf("%s?destination=%s", bc.config.ChallengeURL, encodedURI)
-	http.Redirect(rw, req, url, http.StatusFound)
+	redirectURL := fmt.Sprintf("%s?destination=%s", bc.config.ChallengeURL, encodedURI)
+	http.Redirect(rw, req, redirectURL, http.StatusFound)
 }
 
 func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, destination string) {
@@ -344,7 +344,8 @@ func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, destination
 	err := bc.tmpl.Execute(rw, d)
 	if err != nil {
 		log.Error("Unable to execute go template", "tmpl", bc.config.ChallengeTmpl, "err", err)
-		http.Error(rw, "Internal error", http.StatusInternalServerError)
+		// Can't change status code here, already written
+		_, _ = rw.Write([]byte("\n<!-- Template execution failed -->"))
 	}
 }
 
@@ -360,7 +361,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	body.Add("response", response)
 	resp, err := http.PostForm(bc.captchaConfig.validate, body)
 	if err != nil {
-		log.Error("Unable to validate captcha", "url", bc.captchaConfig.validate, "body", body, "err", err)
+		log.Error("Unable to validate captcha", "url", bc.captchaConfig.validate, "response", response, "err", err)
 		http.Error(rw, "Internal error", http.StatusInternalServerError)
 		return http.StatusInternalServerError
 	}
@@ -408,11 +409,11 @@ func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
 		return
 	}
 
-	rw.WriteHeader(http.StatusOK)
 	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(http.StatusOK)
 	_, err = rw.Write(jsonData)
 	if err != nil {
-		log.Error("failed to write JSON on stats reques", "err", err)
+		log.Error("failed to write JSON on stats request", "err", err)
 		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
