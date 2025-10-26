@@ -397,12 +397,6 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	if captchaResponse.Success {
 		bc.verifiedCache.Set(ip, true, lru.DefaultExpiration)
 
-		// CRITICAL: Immediately persist only this verified IP
-		// Lightweight operation - doesn't save entire state
-		if bc.config.PersistentStateFile != "" {
-			go bc.saveVerifiedIP(ip)
-		}
-
 		destination := req.FormValue("destination")
 		if destination == "" {
 			destination = "%2F"
@@ -739,7 +733,8 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 			bc.saveStateNow()
 
 		case <-ctx.Done():
-			bc.log.Debug("Context cancelled, stopping saveState")
+			bc.log.Debug("Context cancelled, running saveState before shutdown")
+			bc.saveStateNow()
 			return
 		}
 	}
@@ -786,80 +781,6 @@ func (bc *CaptchaProtect) saveStateNow() {
 	}
 
 	bc.log.Debug("State saved successfully")
-}
-
-// saveVerifiedIP persists a single verified IP to the state file.
-// This is much lighter than saveStateNow() - only reads/writes the verified cache section.
-func (bc *CaptchaProtect) saveVerifiedIP(ip string) {
-	lock, err := state.NewFileLock(bc.config.PersistentStateFile + ".lock")
-	if err != nil {
-		bc.log.Error("failed to create file lock for saving verified IP", "err", err)
-		return
-	}
-	defer lock.Close()
-
-	if err := lock.Lock(); err != nil {
-		bc.log.Error("failed to acquire lock for saving verified IP", "err", err)
-		return
-	}
-
-	// Read existing state
-	var fileState state.State
-	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
-	if err == nil && len(fileContent) > 0 {
-		if err := json.Unmarshal(fileContent, &fileState); err != nil {
-			bc.log.Error("failed to unmarshal existing state", "err", err)
-			// Continue with empty state
-			fileState = state.State{
-				Rate:     make(map[string]state.CacheEntry),
-				Bots:     make(map[string]state.CacheEntry),
-				Verified: make(map[string]state.CacheEntry),
-			}
-		}
-	} else {
-		// Initialize empty state
-		fileState = state.State{
-			Rate:     make(map[string]state.CacheEntry),
-			Bots:     make(map[string]state.CacheEntry),
-			Verified: make(map[string]state.CacheEntry),
-		}
-	}
-
-	// Get the verified entry from cache
-	item, found := bc.verifiedCache.Get(ip)
-	if !found {
-		bc.log.Warn("verified IP not found in cache during save", "ip", ip)
-		return
-	}
-
-	// Get expiration from cache items
-	items := bc.verifiedCache.Items()
-	cacheItem, ok := items[ip]
-	if !ok {
-		bc.log.Warn("verified IP cache item not found", "ip", ip)
-		return
-	}
-
-	// Update only this verified IP in the state
-	fileState.Verified[ip] = state.CacheEntry{
-		Value:      item,
-		Expiration: cacheItem.Expiration,
-	}
-
-	// Save the updated state
-	jsonData, err := json.Marshal(fileState)
-	if err != nil {
-		bc.log.Error("failed to marshal state for verified IP", "err", err)
-		return
-	}
-
-	err = os.WriteFile(bc.config.PersistentStateFile, jsonData, 0644)
-	if err != nil {
-		bc.log.Error("failed to write verified IP to state", "err", err)
-		return
-	}
-
-	bc.log.Debug("Verified IP saved", "ip", ip)
 }
 
 // reconcileStateFromDisk checks if the state file has been modified and reconciles if needed.
