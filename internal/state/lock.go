@@ -3,26 +3,27 @@ package state
 import (
 	"fmt"
 	"os"
-	"syscall"
+	"strconv"
 	"time"
 )
 
-// FileLock represents an exclusive file lock using flock
+// FileLock represents an exclusive file lock using lock file creation
+// This implementation doesn't use syscall.Flock which is not available in Traefik plugins
 type FileLock struct {
-	file *os.File
+	lockPath string
+	pid      int
 }
 
 // NewFileLock creates a new file lock for the given path.
-// It will create the file if it doesn't exist.
+// It uses a separate .lock file to coordinate access.
 func NewFileLock(path string) (*FileLock, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open lock file: %w", err)
-	}
-	return &FileLock{file: file}, nil
+	return &FileLock{
+		lockPath: path,
+		pid:      os.Getpid(),
+	}, nil
 }
 
-// Lock acquires an exclusive lock on the file.
+// Lock acquires an exclusive lock by creating a lock file.
 // It will retry for up to 5 seconds if the lock is held by another process.
 func (fl *FileLock) Lock() error {
 	timeout := time.After(5 * time.Second)
@@ -34,28 +35,37 @@ func (fl *FileLock) Lock() error {
 		case <-timeout:
 			return fmt.Errorf("timeout waiting for file lock")
 		case <-ticker.C:
-			err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+			// Try to create lock file exclusively
+			f, err := os.OpenFile(fl.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
 			if err == nil {
+				// Successfully created lock file
+				f.WriteString(strconv.Itoa(fl.pid))
+				f.Close()
 				return nil
 			}
-			// If error is EWOULDBLOCK, the lock is held by another process, retry
-			if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
-				return fmt.Errorf("failed to acquire lock: %w", err)
+
+			// Check if lock file is stale (older than 10 seconds)
+			if info, statErr := os.Stat(fl.lockPath); statErr == nil {
+				if time.Since(info.ModTime()) > 10*time.Second {
+					// Lock file is stale, remove it and try again
+					os.Remove(fl.lockPath)
+				}
 			}
 		}
 	}
 }
 
-// Unlock releases the exclusive lock on the file
+// Unlock releases the exclusive lock by removing the lock file
 func (fl *FileLock) Unlock() error {
-	return syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN)
+	return os.Remove(fl.lockPath)
 }
 
-// Close unlocks and closes the file
+// Close is an alias for Unlock for compatibility
 func (fl *FileLock) Close() error {
-	if err := fl.Unlock(); err != nil {
-		fl.file.Close()
-		return err
+	// Ignore error if lock file doesn't exist (already unlocked)
+	err := fl.Unlock()
+	if os.IsNotExist(err) {
+		return nil
 	}
-	return fl.file.Close()
+	return err
 }
