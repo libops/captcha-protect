@@ -64,7 +64,7 @@ func main() {
 	// make sure the state has time to save
 	fmt.Println("Waiting for state to save")
 	runCommand("jq", ".", "tmp/state.json")
-	time.Sleep(80 * time.Second)
+	time.Sleep(3 * time.Second)
 	runCommand("jq", ".", "tmp/state.json")
 
 	runCommand("docker", "container", "stats", "--no-stream")
