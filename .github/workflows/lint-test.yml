@@ -53,8 +53,30 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-  integration-test:
+  integration-test-latest:
     needs: [run]
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        traefik: [latest]
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+
+      - name: run
+        run: go run test.go
+        working-directory: ./ci
+        env:
+          TRAEFIK_TAG: ${{ matrix.traefik }}
+
+      - name: cleanup
+        if: ${{ always() }}
+        run: docker compose logs --tail 100 nginx nginx2 traefik && docker compose down
+        working-directory: ./ci
+
+  integration-test-backwards-compatibility:
+    needs: [integration-test]
     permissions:
       contents: read
     runs-on: ubuntu-24.04

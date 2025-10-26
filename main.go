@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -26,6 +27,8 @@ import (
 const (
 	// StateSaveInterval is how often the persistent state file is written to disk
 	StateSaveInterval = 5 * time.Second
+	// StateSaveJitter is the maximum random jitter added to save interval to prevent thundering herd
+	StateSaveJitter = 2 * time.Second
 )
 
 type Config struct {
@@ -54,7 +57,12 @@ type Config struct {
 	EnableStatsPage     string `json:"enableStatsPage"`
 	LogLevel            string `json:"loglevel,omitempty"`
 	PersistentStateFile string `json:"persistentStateFile"`
-	Mode                string `json:"mode"`
+	// EnableStateReconciliation is a string instead of bool due to Traefik's label parsing limitations
+	// When enabled, the plugin will read and merge state from disk before each save to prevent
+	// multiple instances from overwriting each other's data. This adds extra I/O overhead.
+	// Only enable this if running multiple plugin instances sharing the same state file.
+	EnableStateReconciliation string `json:"enableStateReconciliation"`
+	Mode                      string `json:"mode"`
 }
 
 type CaptchaProtect struct {
@@ -87,27 +95,28 @@ type captchaResponse struct {
 
 func CreateConfig() *Config {
 	return &Config{
-		RateLimit:             20,
-		Window:                86400,
-		IPv4SubnetMask:        16,
-		IPv6SubnetMask:        64,
-		IPForwardedHeader:     "",
-		ProtectParameters:     "false",
-		ProtectRoutes:         []string{},
-		ExcludeRoutes:         []string{},
-		ProtectHttpMethods:    []string{},
-		ProtectFileExtensions: []string{},
-		GoodBots:              []string{},
-		ExemptIPs:             []string{},
-		ExemptUserAgents:      []string{},
-		ChallengeURL:          "/challenge",
-		ChallengeTmpl:         "challenge.tmpl.html",
-		ChallengeStatusCode:   0,
-		EnableStatsPage:       "false",
-		LogLevel:              "INFO",
-		IPDepth:               0,
-		CaptchaProvider:       "turnstile",
-		Mode:                  "prefix",
+		RateLimit:                 20,
+		Window:                    86400,
+		IPv4SubnetMask:            16,
+		IPv6SubnetMask:            64,
+		IPForwardedHeader:         "",
+		ProtectParameters:         "false",
+		ProtectRoutes:             []string{},
+		ExcludeRoutes:             []string{},
+		ProtectHttpMethods:        []string{},
+		ProtectFileExtensions:     []string{},
+		GoodBots:                  []string{},
+		ExemptIPs:                 []string{},
+		ExemptUserAgents:          []string{},
+		ChallengeURL:              "/challenge",
+		ChallengeTmpl:             "challenge.tmpl.html",
+		ChallengeStatusCode:       0,
+		EnableStatsPage:           "false",
+		LogLevel:                  "INFO",
+		IPDepth:                   0,
+		CaptchaProvider:           "turnstile",
+		Mode:                      "prefix",
+		EnableStateReconciliation: "false",
 	}
 }
 
@@ -705,7 +714,13 @@ func (c *Config) ParseHttpMethods(log *slog.Logger) {
 }
 
 func (bc *CaptchaProtect) saveState(ctx context.Context) {
-	ticker := time.NewTicker(StateSaveInterval)
+	// Add random jitter to prevent multiple instances from trying to save simultaneously
+	jitter := time.Duration(rand.Intn(int(StateSaveJitter.Milliseconds()))) * time.Millisecond
+	interval := StateSaveInterval + jitter
+
+	bc.log.Debug("State save configured", "baseInterval", StateSaveInterval, "jitter", jitter, "actualInterval", interval)
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_CREATE|os.O_WRONLY, 0644)
@@ -730,9 +745,12 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 	}
 }
 
-// saveStateNow performs an immediate state save with file locking and reconciliation.
-// This prevents multiple plugin instances from overwriting each other's state.
+// saveStateNow performs an immediate state save with file locking and optional reconciliation.
+// When reconciliation is enabled, it reads and merges state from disk before saving to prevent
+// multiple plugin instances from overwriting each other's data (at the cost of extra I/O).
 func (bc *CaptchaProtect) saveStateNow() {
+	startTime := time.Now()
+
 	lock, err := state.NewFileLock(bc.config.PersistentStateFile + ".lock")
 	if err != nil {
 		bc.log.Error("failed to create file lock for saving", "err", err)
@@ -744,33 +762,62 @@ func (bc *CaptchaProtect) saveStateNow() {
 		bc.log.Error("failed to acquire lock for saving state", "err", err)
 		return
 	}
+	lockDuration := time.Since(startTime)
 
-	// First, load and reconcile with existing file state
-	// This ensures we don't overwrite newer data from other instances
-	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
-	if err == nil && len(fileContent) > 0 {
-		var fileState state.State
-		if err := json.Unmarshal(fileContent, &fileState); err == nil {
-			bc.log.Debug("Reconciling state before save")
-			state.ReconcileState(fileState, bc.rateCache, bc.botCache, bc.verifiedCache)
+	var readDuration, reconcileDuration, marshalDuration, writeDuration time.Duration
+
+	// Reconcile with existing file state if enabled
+	// This prevents multiple instances from overwriting each other's data
+	if bc.config.EnableStateReconciliation == "true" {
+		readStart := time.Now()
+		fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
+		readDuration = time.Since(readStart)
+
+		if err == nil && len(fileContent) > 0 {
+			reconcileStart := time.Now()
+			var fileState state.State
+			if err := json.Unmarshal(fileContent, &fileState); err == nil {
+				bc.log.Debug("Reconciling state before save", "fileBytes", len(fileContent))
+				state.ReconcileState(fileState, bc.rateCache, bc.botCache, bc.verifiedCache)
+			}
+			reconcileDuration = time.Since(reconcileStart)
 		}
 	}
 
-	// Now save our current state
+	// Marshal current state
+	marshalStart := time.Now()
 	currentState := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
 	jsonData, err := json.Marshal(currentState)
+	marshalDuration = time.Since(marshalStart)
+
 	if err != nil {
 		bc.log.Error("failed to marshal state data", "err", err)
 		return
 	}
 
+	// Write to disk
+	writeStart := time.Now()
 	err = os.WriteFile(bc.config.PersistentStateFile, jsonData, 0644)
+	writeDuration = time.Since(writeStart)
+
 	if err != nil {
 		bc.log.Error("failed to save state data", "err", err)
 		return
 	}
 
-	bc.log.Debug("State saved successfully")
+	totalDuration := time.Since(startTime)
+	bc.log.Debug("State saved successfully",
+		"bytes", len(jsonData),
+		"rateEntries", len(currentState.Rate),
+		"botEntries", len(currentState.Bots),
+		"verifiedEntries", len(currentState.Verified),
+		"lockMs", lockDuration.Milliseconds(),
+		"readMs", readDuration.Milliseconds(),
+		"reconcileMs", reconcileDuration.Milliseconds(),
+		"marshalMs", marshalDuration.Milliseconds(),
+		"writeMs", writeDuration.Milliseconds(),
+		"totalMs", totalDuration.Milliseconds(),
+	)
 }
 
 func (bc *CaptchaProtect) loadState() {

@@ -57,7 +57,7 @@ func main() {
 
 	fmt.Println("\nTesting state sharing between nginx instances...")
 	fmt.Println("Waiting 2 seconds for state to save to disk...")
-	time.Sleep(2 * time.Second)
+	time.Sleep(cp.StateSaveInterval + (5 * time.Second))
 	testStateSharing(ips)
 
 	fmt.Println("Sleeping for 2m")
@@ -69,7 +69,7 @@ func main() {
 	// make sure the state has time to save
 	fmt.Println("Waiting for state to save")
 	runCommand("jq", ".", "tmp/state.json")
-	time.Sleep(cp.StateSaveInterval + (2 * time.Second))
+	time.Sleep(cp.StateSaveInterval + (5 * time.Second))
 	runCommand("jq", ".", "tmp/state.json")
 
 	runCommand("docker", "container", "stats", "--no-stream")
