@@ -23,6 +23,11 @@ import (
 	lru "github.com/patrickmn/go-cache"
 )
 
+const (
+	// StateSaveInterval is how often the persistent state file is written to disk
+	StateSaveInterval = 5 * time.Second
+)
+
 type Config struct {
 	RateLimit         uint   `json:"rateLimit"`
 	Window            int64  `json:"window"`
@@ -700,7 +705,7 @@ func (c *Config) ParseHttpMethods(log *slog.Logger) {
 }
 
 func (bc *CaptchaProtect) saveState(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(StateSaveInterval)
 	defer ticker.Stop()
 
 	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_CREATE|os.O_WRONLY, 0644)
