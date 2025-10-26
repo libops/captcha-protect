@@ -39,9 +39,9 @@ func (fl *FileLock) Lock() error {
 			f, err := os.OpenFile(fl.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
 			if err == nil {
 				// Successfully created lock file
-				f.WriteString(strconv.Itoa(fl.pid))
+				_, err = f.WriteString(strconv.Itoa(fl.pid))
 				f.Close()
-				return nil
+				return err
 			}
 
 			// Check if lock file is stale (older than 10 seconds)
