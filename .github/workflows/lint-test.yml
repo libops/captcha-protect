@@ -75,8 +75,8 @@ jobs:
         run: docker compose logs --tail 100 nginx nginx2 traefik && docker compose down
         working-directory: ./ci
 
-  integration-test-backwards-compatibility:
-    needs: [integration-test]
+  integration-test:
+    needs: [integration-test-latest]
     permissions:
       contents: read
     runs-on: ubuntu-24.04

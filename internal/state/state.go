@@ -1,6 +1,9 @@
 package state
 
 import (
+	"encoding/json"
+	"log/slog"
+	"os"
 	"reflect"
 	"time"
 
@@ -254,4 +257,106 @@ func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cac
 			verifiedCache.Set(k, value, duration)
 		}
 	}
+}
+
+// SaveStateToFile saves state to a file with locking and optional reconciliation.
+// When reconcile is true, it reads and merges existing file state before saving.
+// Returns timing metrics for debugging.
+func SaveStateToFile(
+	filePath string,
+	reconcile bool,
+	rateCache, botCache, verifiedCache *lru.Cache,
+	log *slog.Logger,
+) (lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs int64, err error) {
+	startTime := time.Now()
+
+	lock, err := NewFileLock(filePath + ".lock")
+	if err != nil {
+		return 0, 0, 0, 0, 0, 0, err
+	}
+	defer lock.Close()
+
+	if err := lock.Lock(); err != nil {
+		return 0, 0, 0, 0, 0, 0, err
+	}
+	lockDuration := time.Since(startTime)
+
+	var readDuration, reconcileDuration, marshalDuration, writeDuration time.Duration
+
+	// Reconcile with existing file state if enabled
+	if reconcile {
+		readStart := time.Now()
+		fileContent, readErr := os.ReadFile(filePath)
+		readDuration = time.Since(readStart)
+
+		if readErr == nil && len(fileContent) > 0 {
+			reconcileStart := time.Now()
+			var fileState State
+			if unmarshalErr := json.Unmarshal(fileContent, &fileState); unmarshalErr == nil {
+				log.Debug("Reconciling state before save", "fileBytes", len(fileContent))
+				ReconcileState(fileState, rateCache, botCache, verifiedCache)
+			}
+			reconcileDuration = time.Since(reconcileStart)
+		}
+	}
+
+	// Marshal current state
+	marshalStart := time.Now()
+	currentState := GetState(rateCache.Items(), botCache.Items(), verifiedCache.Items())
+	jsonData, err := json.Marshal(currentState)
+	marshalDuration = time.Since(marshalStart)
+
+	if err != nil {
+		return lockDuration.Milliseconds(), readDuration.Milliseconds(),
+			reconcileDuration.Milliseconds(), marshalDuration.Milliseconds(),
+			0, 0, err
+	}
+
+	// Write to disk
+	writeStart := time.Now()
+	err = os.WriteFile(filePath, jsonData, 0644)
+	writeDuration = time.Since(writeStart)
+
+	if err != nil {
+		return lockDuration.Milliseconds(), readDuration.Milliseconds(),
+			reconcileDuration.Milliseconds(), marshalDuration.Milliseconds(),
+			writeDuration.Milliseconds(), 0, err
+	}
+
+	totalDuration := time.Since(startTime)
+	return lockDuration.Milliseconds(), readDuration.Milliseconds(),
+		reconcileDuration.Milliseconds(), marshalDuration.Milliseconds(),
+		writeDuration.Milliseconds(), totalDuration.Milliseconds(), nil
+}
+
+// LoadStateFromFile loads state from a file with locking.
+func LoadStateFromFile(
+	filePath string,
+	rateCache, botCache, verifiedCache *lru.Cache,
+) error {
+	lock, err := NewFileLock(filePath + ".lock")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
+	if err := lock.Lock(); err != nil {
+		return err
+	}
+
+	fileContent, err := os.ReadFile(filePath)
+	if err != nil || len(fileContent) == 0 {
+		return err
+	}
+
+	var loadedState State
+	err = json.Unmarshal(fileContent, &loadedState)
+	if err != nil {
+		return err
+	}
+
+	// Use SetState which properly handles expiration times
+	SetState(loadedState, rateCache, botCache, verifiedCache)
+
+	return nil
 }

@@ -745,109 +745,51 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 	}
 }
 
-// saveStateNow performs an immediate state save with file locking and optional reconciliation.
-// When reconciliation is enabled, it reads and merges state from disk before saving to prevent
-// multiple plugin instances from overwriting each other's data (at the cost of extra I/O).
+// saveStateNow performs an immediate state save using the state package.
 func (bc *CaptchaProtect) saveStateNow() {
-	startTime := time.Now()
+	reconcile := bc.config.EnableStateReconciliation == "true"
 
-	lock, err := state.NewFileLock(bc.config.PersistentStateFile + ".lock")
+	lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs, err := state.SaveStateToFile(
+		bc.config.PersistentStateFile,
+		reconcile,
+		bc.rateCache,
+		bc.botCache,
+		bc.verifiedCache,
+		bc.log,
+	)
+
 	if err != nil {
-		bc.log.Error("failed to create file lock for saving", "err", err)
+		bc.log.Error("failed to save state", "err", err)
 		return
 	}
-	defer lock.Close()
 
-	if err := lock.Lock(); err != nil {
-		bc.log.Error("failed to acquire lock for saving state", "err", err)
-		return
-	}
-	lockDuration := time.Since(startTime)
-
-	var readDuration, reconcileDuration, marshalDuration, writeDuration time.Duration
-
-	// Reconcile with existing file state if enabled
-	// This prevents multiple instances from overwriting each other's data
-	if bc.config.EnableStateReconciliation == "true" {
-		readStart := time.Now()
-		fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
-		readDuration = time.Since(readStart)
-
-		if err == nil && len(fileContent) > 0 {
-			reconcileStart := time.Now()
-			var fileState state.State
-			if err := json.Unmarshal(fileContent, &fileState); err == nil {
-				bc.log.Debug("Reconciling state before save", "fileBytes", len(fileContent))
-				state.ReconcileState(fileState, bc.rateCache, bc.botCache, bc.verifiedCache)
-			}
-			reconcileDuration = time.Since(reconcileStart)
-		}
-	}
-
-	// Marshal current state
-	marshalStart := time.Now()
+	// Get current state for logging (already marshaled in SaveStateToFile, but we need counts)
 	currentState := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
-	jsonData, err := json.Marshal(currentState)
-	marshalDuration = time.Since(marshalStart)
-
-	if err != nil {
-		bc.log.Error("failed to marshal state data", "err", err)
-		return
-	}
-
-	// Write to disk
-	writeStart := time.Now()
-	err = os.WriteFile(bc.config.PersistentStateFile, jsonData, 0644)
-	writeDuration = time.Since(writeStart)
-
-	if err != nil {
-		bc.log.Error("failed to save state data", "err", err)
-		return
-	}
-
-	totalDuration := time.Since(startTime)
 	bc.log.Debug("State saved successfully",
-		"bytes", len(jsonData),
 		"rateEntries", len(currentState.Rate),
 		"botEntries", len(currentState.Bots),
 		"verifiedEntries", len(currentState.Verified),
-		"lockMs", lockDuration.Milliseconds(),
-		"readMs", readDuration.Milliseconds(),
-		"reconcileMs", reconcileDuration.Milliseconds(),
-		"marshalMs", marshalDuration.Milliseconds(),
-		"writeMs", writeDuration.Milliseconds(),
-		"totalMs", totalDuration.Milliseconds(),
+		"lockMs", lockMs,
+		"readMs", readMs,
+		"reconcileMs", reconcileMs,
+		"marshalMs", marshalMs,
+		"writeMs", writeMs,
+		"totalMs", totalMs,
 	)
 }
 
 func (bc *CaptchaProtect) loadState() {
-	lock, err := state.NewFileLock(bc.config.PersistentStateFile + ".lock")
+	err := state.LoadStateFromFile(
+		bc.config.PersistentStateFile,
+		bc.rateCache,
+		bc.botCache,
+		bc.verifiedCache,
+	)
+
 	if err != nil {
-		bc.log.Error("failed to create file lock", "err", err)
-		return
-	}
-	defer lock.Close()
-
-	if err := lock.Lock(); err != nil {
-		bc.log.Error("failed to acquire lock for loading state", "err", err)
-		return
-	}
-
-	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
-	if err != nil || len(fileContent) == 0 {
 		bc.log.Warn("failed to load state file", "err", err)
 		return
 	}
-
-	var loadedState state.State
-	err = json.Unmarshal(fileContent, &loadedState)
-	if err != nil {
-		bc.log.Error("failed to unmarshal state file", "err", err)
-		return
-	}
-
-	// Use SetState which properly handles expiration times
-	state.SetState(loadedState, bc.rateCache, bc.botCache, bc.verifiedCache)
 
 	bc.log.Info("Loaded previous state")
 }

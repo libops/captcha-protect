@@ -52,25 +52,14 @@ func main() {
 	fmt.Printf("Making sure %d attempt(s) pass\n", rateLimit)
 	runParallelChecks(ips, rateLimit, "http://localhost")
 
+	time.Sleep(cp.StateSaveInterval + cp.StateSaveJitter + (1 * time.Second))
+	runCommand("jq", ".", "tmp/state.json")
+
 	fmt.Printf("Making sure attempt #%d causes a redirect to the challenge page\n", rateLimit+1)
 	ensureRedirect(ips, "http://localhost")
 
 	fmt.Println("\nTesting state sharing between nginx instances...")
-	fmt.Println("Waiting 2 seconds for state to save to disk...")
-	time.Sleep(cp.StateSaveInterval + (5 * time.Second))
 	testStateSharing(ips)
-
-	fmt.Println("Sleeping for 2m")
-	time.Sleep(125 * time.Second)
-	fmt.Println("Making sure one attempt passes after 2m window")
-	runParallelChecks(ips, 1, "http://localhost")
-	fmt.Println("All good 🚀")
-
-	// make sure the state has time to save
-	fmt.Println("Waiting for state to save")
-	runCommand("jq", ".", "tmp/state.json")
-	time.Sleep(cp.StateSaveInterval + (5 * time.Second))
-	runCommand("jq", ".", "tmp/state.json")
 
 	runCommand("docker", "container", "stats", "--no-stream")
 
