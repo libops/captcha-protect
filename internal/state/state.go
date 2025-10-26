@@ -152,6 +152,20 @@ func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cac
 			continue // Skip expired entries
 		}
 
+		// Handle JSON unmarshaling where numbers become float64
+		var value uint
+		switch v := fileEntry.Value.(type) {
+		case uint:
+			value = v
+		case float64:
+			value = uint(v)
+		case int:
+			value = uint(v)
+		default:
+			// Skip invalid types
+			continue
+		}
+
 		memItem, exists := rateItems[k]
 		if !exists {
 			// Entry only exists in file, add it
@@ -159,7 +173,7 @@ func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cac
 			if fileEntry.Expiration == 0 {
 				duration = lru.NoExpiration
 			}
-			rateCache.Set(k, fileEntry.Value, duration)
+			rateCache.Set(k, value, duration)
 			continue
 		}
 
@@ -169,7 +183,7 @@ func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cac
 			if fileEntry.Expiration == 0 {
 				duration = lru.NoExpiration
 			}
-			rateCache.Set(k, fileEntry.Value, duration)
+			rateCache.Set(k, value, duration)
 		}
 	}
 
@@ -179,13 +193,22 @@ func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cac
 			continue
 		}
 
+		// Handle JSON unmarshaling
+		var value bool
+		switch v := fileEntry.Value.(type) {
+		case bool:
+			value = v
+		default:
+			continue
+		}
+
 		memItem, exists := botItems[k]
 		if !exists {
 			duration := time.Duration(fileEntry.Expiration - now)
 			if fileEntry.Expiration == 0 {
 				duration = lru.NoExpiration
 			}
-			botCache.Set(k, fileEntry.Value, duration)
+			botCache.Set(k, value, duration)
 			continue
 		}
 
@@ -194,7 +217,7 @@ func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cac
 			if fileEntry.Expiration == 0 {
 				duration = lru.NoExpiration
 			}
-			botCache.Set(k, fileEntry.Value, duration)
+			botCache.Set(k, value, duration)
 		}
 	}
 
@@ -204,13 +227,22 @@ func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cac
 			continue
 		}
 
+		// Handle JSON unmarshaling
+		var value bool
+		switch v := fileEntry.Value.(type) {
+		case bool:
+			value = v
+		default:
+			continue
+		}
+
 		memItem, exists := verifiedItems[k]
 		if !exists {
 			duration := time.Duration(fileEntry.Expiration - now)
 			if fileEntry.Expiration == 0 {
 				duration = lru.NoExpiration
 			}
-			verifiedCache.Set(k, fileEntry.Value, duration)
+			verifiedCache.Set(k, value, duration)
 			continue
 		}
 
@@ -219,7 +251,7 @@ func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cac
 			if fileEntry.Expiration == 0 {
 				duration = lru.NoExpiration
 			}
-			verifiedCache.Set(k, fileEntry.Value, duration)
+			verifiedCache.Set(k, value, duration)
 		}
 	}
 }
