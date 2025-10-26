@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"text/template"
 	"time"
 
@@ -69,8 +68,6 @@ type CaptchaProtect struct {
 	ipv6Mask           net.IPMask
 	protectRoutesRegex []*regexp.Regexp
 	excludeRoutesRegex []*regexp.Regexp
-	lastStateMtime     time.Time
-	stateMu            sync.Mutex
 }
 
 type CaptchaConfig struct {
@@ -577,26 +574,14 @@ func (bc *CaptchaProtect) trippedRateLimit(ip string) bool {
 }
 
 func (bc *CaptchaProtect) registerRequest(ip string) {
-	// Check if subnet already exists in cache
-	_, exists := bc.rateCache.Get(ip)
-	if !exists {
-		// New subnet - check disk first in case another instance has seen it
-		if bc.config.PersistentStateFile != "" {
-			bc.reconcileStateFromDisk()
-		}
-
-		// Try to add again after reconciliation
-		_, stillExists := bc.rateCache.Get(ip)
-		if !stillExists {
-			bc.rateCache.Set(ip, uint(1), lru.DefaultExpiration)
-			return
-		}
+	err := bc.rateCache.Add(ip, uint(1), lru.DefaultExpiration)
+	if err == nil {
+		return
 	}
 
-	// Subnet exists, increment it
-	_, err := bc.rateCache.IncrementUint(ip, uint(1))
+	_, err = bc.rateCache.IncrementUint(ip, uint(1))
 	if err != nil {
-		bc.log.Error("unable to increment rate cache", "ip", ip, "err", err)
+		bc.log.Error("unable to set rate cache", "ip", ip, "err", err)
 	}
 }
 
@@ -781,52 +766,6 @@ func (bc *CaptchaProtect) saveStateNow() {
 	}
 
 	bc.log.Debug("State saved successfully")
-}
-
-// reconcileStateFromDisk checks if the state file has been modified and reconciles if needed.
-// Uses mtime checking to avoid unnecessary disk reads.
-func (bc *CaptchaProtect) reconcileStateFromDisk() {
-	bc.stateMu.Lock()
-	defer bc.stateMu.Unlock()
-
-	// Check file modification time first - avoid unnecessary reads
-	info, err := os.Stat(bc.config.PersistentStateFile)
-	if err != nil {
-		// File doesn't exist yet or can't be read
-		return
-	}
-
-	// Only read if file was modified since last check
-	if !info.ModTime().After(bc.lastStateMtime) {
-		return
-	}
-
-	bc.lastStateMtime = info.ModTime()
-
-	// File has been modified, read and reconcile
-	lock, err := state.NewFileLock(bc.config.PersistentStateFile + ".lock")
-	if err != nil {
-		return // Silent fail
-	}
-	defer lock.Close()
-
-	if err := lock.Lock(); err != nil {
-		return // Another instance is writing
-	}
-
-	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
-	if err != nil || len(fileContent) == 0 {
-		return
-	}
-
-	var fileState state.State
-	if err := json.Unmarshal(fileContent, &fileState); err != nil {
-		return
-	}
-
-	// Reconcile all caches with file state
-	state.ReconcileState(fileState, bc.rateCache, bc.botCache, bc.verifiedCache)
-	bc.log.Debug("Reconciled state from disk")
 }
 
 func (bc *CaptchaProtect) loadState() {
