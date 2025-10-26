@@ -72,5 +72,5 @@ jobs:
 
       - name: cleanup
         if: ${{ always() }}
-        run: docker compose down
+        run: docker compose logs --tail 100 nginx nginx2 traefik && docker compose down
         working-directory: ./ci
