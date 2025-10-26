@@ -393,6 +393,13 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	}
 	if captchaResponse.Success {
 		bc.verifiedCache.Set(ip, true, lru.DefaultExpiration)
+
+		// CRITICAL: Immediately persist only this verified IP
+		// Lightweight operation - doesn't save entire state
+		if bc.config.PersistentStateFile != "" {
+			go bc.saveVerifiedIP(ip)
+		}
+
 		destination := req.FormValue("destination")
 		if destination == "" {
 			destination = "%2F"
@@ -713,17 +720,8 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			bc.log.Debug("Saving state")
-			state := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
-			jsonData, err := json.Marshal(state)
-			if err != nil {
-				bc.log.Error("failed to marshal state data", "err", err)
-				break
-			}
-			err = os.WriteFile(bc.config.PersistentStateFile, jsonData, 0644)
-			if err != nil {
-				bc.log.Error("failed to save state data", "err", err)
-			}
+			bc.log.Debug("Periodic state save triggered")
+			bc.saveStateNow()
 
 		case <-ctx.Done():
 			bc.log.Debug("Context cancelled, stopping saveState")
@@ -732,31 +730,151 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 	}
 }
 
+// saveStateNow performs an immediate state save with file locking and reconciliation.
+// This prevents multiple plugin instances from overwriting each other's state.
+func (bc *CaptchaProtect) saveStateNow() {
+	lock, err := state.NewFileLock(bc.config.PersistentStateFile + ".lock")
+	if err != nil {
+		bc.log.Error("failed to create file lock for saving", "err", err)
+		return
+	}
+	defer lock.Close()
+
+	if err := lock.Lock(); err != nil {
+		bc.log.Error("failed to acquire lock for saving state", "err", err)
+		return
+	}
+
+	// First, load and reconcile with existing file state
+	// This ensures we don't overwrite newer data from other instances
+	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
+	if err == nil && len(fileContent) > 0 {
+		var fileState state.State
+		if err := json.Unmarshal(fileContent, &fileState); err == nil {
+			bc.log.Debug("Reconciling state before save")
+			state.ReconcileState(fileState, bc.rateCache, bc.botCache, bc.verifiedCache)
+		}
+	}
+
+	// Now save our current state
+	currentState := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
+	jsonData, err := json.Marshal(currentState)
+	if err != nil {
+		bc.log.Error("failed to marshal state data", "err", err)
+		return
+	}
+
+	err = os.WriteFile(bc.config.PersistentStateFile, jsonData, 0644)
+	if err != nil {
+		bc.log.Error("failed to save state data", "err", err)
+		return
+	}
+
+	bc.log.Debug("State saved successfully")
+}
+
+// saveVerifiedIP persists a single verified IP to the state file.
+// This is much lighter than saveStateNow() - only reads/writes the verified cache section.
+func (bc *CaptchaProtect) saveVerifiedIP(ip string) {
+	lock, err := state.NewFileLock(bc.config.PersistentStateFile + ".lock")
+	if err != nil {
+		bc.log.Error("failed to create file lock for saving verified IP", "err", err)
+		return
+	}
+	defer lock.Close()
+
+	if err := lock.Lock(); err != nil {
+		bc.log.Error("failed to acquire lock for saving verified IP", "err", err)
+		return
+	}
+
+	// Read existing state
+	var fileState state.State
+	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
+	if err == nil && len(fileContent) > 0 {
+		if err := json.Unmarshal(fileContent, &fileState); err != nil {
+			bc.log.Error("failed to unmarshal existing state", "err", err)
+			// Continue with empty state
+			fileState = state.State{
+				Rate:     make(map[string]state.CacheEntry),
+				Bots:     make(map[string]state.CacheEntry),
+				Verified: make(map[string]state.CacheEntry),
+			}
+		}
+	} else {
+		// Initialize empty state
+		fileState = state.State{
+			Rate:     make(map[string]state.CacheEntry),
+			Bots:     make(map[string]state.CacheEntry),
+			Verified: make(map[string]state.CacheEntry),
+		}
+	}
+
+	// Get the verified entry from cache
+	item, found := bc.verifiedCache.Get(ip)
+	if !found {
+		bc.log.Warn("verified IP not found in cache during save", "ip", ip)
+		return
+	}
+
+	// Get expiration from cache items
+	items := bc.verifiedCache.Items()
+	cacheItem, ok := items[ip]
+	if !ok {
+		bc.log.Warn("verified IP cache item not found", "ip", ip)
+		return
+	}
+
+	// Update only this verified IP in the state
+	fileState.Verified[ip] = state.CacheEntry{
+		Value:      item,
+		Expiration: cacheItem.Expiration,
+	}
+
+	// Save the updated state
+	jsonData, err := json.Marshal(fileState)
+	if err != nil {
+		bc.log.Error("failed to marshal state for verified IP", "err", err)
+		return
+	}
+
+	err = os.WriteFile(bc.config.PersistentStateFile, jsonData, 0644)
+	if err != nil {
+		bc.log.Error("failed to write verified IP to state", "err", err)
+		return
+	}
+
+	bc.log.Debug("Verified IP saved", "ip", ip)
+}
+
 func (bc *CaptchaProtect) loadState() {
+	lock, err := state.NewFileLock(bc.config.PersistentStateFile + ".lock")
+	if err != nil {
+		bc.log.Error("failed to create file lock", "err", err)
+		return
+	}
+	defer lock.Close()
+
+	if err := lock.Lock(); err != nil {
+		bc.log.Error("failed to acquire lock for loading state", "err", err)
+		return
+	}
+
 	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
 	if err != nil || len(fileContent) == 0 {
 		bc.log.Warn("failed to load state file", "err", err)
 		return
 	}
 
-	var state state.State
-	err = json.Unmarshal(fileContent, &state)
+	var loadedState state.State
+	err = json.Unmarshal(fileContent, &loadedState)
 	if err != nil {
 		bc.log.Error("failed to unmarshal state file", "err", err)
 		return
 	}
 
-	for k, v := range state.Rate {
-		bc.rateCache.Set(k, v, lru.DefaultExpiration)
-	}
-
-	for k, v := range state.Bots {
-		bc.botCache.Set(k, v, lru.DefaultExpiration)
-	}
-
-	for k, v := range state.Verified {
-		bc.verifiedCache.Set(k, v, lru.DefaultExpiration)
-	}
+	// Use SetState which properly handles expiration times
+	state.SetState(loadedState, bc.rateCache, bc.botCache, bc.verifiedCache)
 
 	bc.log.Info("Loaded previous state")
 }
