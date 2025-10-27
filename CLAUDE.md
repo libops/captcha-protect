@@ -16,9 +16,10 @@ This is a Traefik middleware plugin that protects websites from bot traffic by c
   - `CaptchaProtect` struct: Main middleware handler with rate limiting, bot detection, and challenge serving
   - `Config` struct: Configuration from Traefik labels
   - Three in-memory caches (using `github.com/patrickmn/go-cache`):
-    - `rateCache`: Tracks request counts per subnet
+    - `rateCache`: Tracks request counts per subnet (TTL = `window` config value)
     - `verifiedCache`: Stores IPs that have passed challenges (24h default TTL)
-    - `botCache`: Caches reverse DNS lookups for bot verification
+    - `botCache`: Caches reverse DNS lookups for bot verification (1h TTL)
+  - **Why go-cache instead of sync.Map?** The plugin requires automatic TTL-based expiration for all caches. `sync.Map` has no built-in expiration mechanism, requiring manual cleanup goroutines. `go-cache` provides thread-safe maps with automatic expiration and cleanup.
 
 ### Request Flow Decision Tree
 
@@ -120,9 +121,18 @@ Regex is significantly slower (~41ns vs ~3.4ns per operation) - see README bench
 ### State Persistence
 
 When `persistentStateFile` is configured:
-- State saves every 1 minute to JSON file (`saveState()` at `main.go:695-727`)
-- On startup, loads previous state from file (`loadState()` at `main.go:729-756`)
+- State saves every 10 seconds (with 0-2s random jitter) to JSON file (`saveState()` at `main.go:716-746`)
+- Uses file locking (`.lock` files) to prevent concurrent writes (`internal/state/state.go:61-129`)
+- On startup, loads previous state from file (`loadState()` at `main.go:729-761`)
 - Contains: rate limits per subnet, bot verification cache, verified IPs
+- **Important**: Each middleware instance runs its own save goroutine. If multiple instances share the same `persistentStateFile`, they will write more frequently (e.g., 2 instances = writes every ~5 seconds)
+- **State Reconciliation**: When `enableStateReconciliation: "true"`, each save performs a read-modify-write cycle to merge state from other instances. This adds I/O overhead but prevents data loss in multi-instance deployments (see `internal/state/state.go:86-100`)
+
+**Why not Redis?** Traefik plugins are loaded via Yaegi (a Go interpreter), which has significant limitations:
+- Yaegi cannot interpret Go packages that use `unsafe`, cgo, or complex reflection patterns
+- Popular Redis clients like `go-redis/redis` are incompatible with Yaegi
+
+**Current solution**: File-based persistence with reconciliation avoids these issues. Local caches remain fast (no network overhead), state saves are batched (every 10s), and reconciliation handles conflicts without complex coordination. The tradeoff is accepting slightly stale data across instances (max 10s delay) rather than the complexity and performance cost of real-time Redis synchronization.
 
 ### Good Bot Detection
 
