@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"reflect"
@@ -91,7 +92,6 @@ func SetState(state State, rateCache, botCache, verifiedCache *lru.Cache) {
 		case int:
 			value = uint(v)
 		default:
-			// Skip invalid types
 			continue
 		}
 		rateCache.Set(k, value, duration)
@@ -272,12 +272,12 @@ func SaveStateToFile(
 
 	lock, err := NewFileLock(filePath + ".lock")
 	if err != nil {
-		return 0, 0, 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("failed to create lock: %w", err)
 	}
 	defer lock.Close()
 
 	if err := lock.Lock(); err != nil {
-		return 0, 0, 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("failed to acquire lock: %w", err)
 	}
 	lockDuration := time.Since(startTime)
 
