@@ -29,41 +29,9 @@ func GetState(rateCache, botCache, verifiedCache map[string]lru.Item) State {
 		Memory: make(map[string]uintptr, 3),
 	}
 
-	state.Rate = make(map[string]CacheEntry, len(rateCache))
-	state.Memory["rate"] = reflect.TypeOf(state.Rate).Size()
-	for k, v := range rateCache {
-		state.Rate[k] = CacheEntry{
-			Value:      v.Object.(uint),
-			Expiration: v.Expiration,
-		}
-		state.Memory["rate"] += reflect.TypeOf(k).Size()
-		state.Memory["rate"] += reflect.TypeOf(v).Size()
-		state.Memory["rate"] += uintptr(len(k))
-	}
-
-	state.Bots = make(map[string]CacheEntry, len(botCache))
-	state.Memory["bot"] = reflect.TypeOf(state.Bots).Size()
-	for k, v := range botCache {
-		state.Bots[k] = CacheEntry{
-			Value:      v.Object.(bool),
-			Expiration: v.Expiration,
-		}
-		state.Memory["bot"] += reflect.TypeOf(k).Size()
-		state.Memory["bot"] += reflect.TypeOf(v).Size()
-		state.Memory["bot"] += uintptr(len(k))
-	}
-
-	state.Verified = make(map[string]CacheEntry, len(verifiedCache))
-	state.Memory["verified"] = reflect.TypeOf(state.Verified).Size()
-	for k, v := range verifiedCache {
-		state.Verified[k] = CacheEntry{
-			Value:      v.Object.(bool),
-			Expiration: v.Expiration,
-		}
-		state.Memory["verified"] += reflect.TypeOf(k).Size()
-		state.Memory["verified"] += reflect.TypeOf(v).Size()
-		state.Memory["verified"] += uintptr(len(k))
-	}
+	state.Rate, state.Memory["rate"] = getCacheEntries[uint](rateCache)
+	state.Bots, state.Memory["bot"] = getCacheEntries[bool](botCache)
+	state.Verified, state.Memory["verified"] = getCacheEntries[bool](verifiedCache)
 
 	return state
 }
@@ -71,192 +39,22 @@ func GetState(rateCache, botCache, verifiedCache map[string]lru.Item) State {
 // SetState loads state data into the provided caches, preserving expiration times.
 // If an entry has already expired (expiration < now), it will be skipped.
 func SetState(state State, rateCache, botCache, verifiedCache *lru.Cache) {
-	now := time.Now().UnixNano()
-
-	for k, entry := range state.Rate {
-		if entry.Expiration > 0 && entry.Expiration < now {
-			continue // Skip expired entries
-		}
-		duration := time.Duration(entry.Expiration - now)
-		if entry.Expiration == 0 {
-			duration = lru.NoExpiration
-		}
-
-		// Handle JSON unmarshaling where numbers become float64
-		var value uint
-		switch v := entry.Value.(type) {
-		case uint:
-			value = v
-		case float64:
-			value = uint(v)
-		case int:
-			value = uint(v)
-		default:
-			continue
-		}
-		rateCache.Set(k, value, duration)
-	}
-
-	for k, entry := range state.Bots {
-		if entry.Expiration > 0 && entry.Expiration < now {
-			continue
-		}
-		duration := time.Duration(entry.Expiration - now)
-		if entry.Expiration == 0 {
-			duration = lru.NoExpiration
-		}
-
-		// Handle JSON unmarshaling
-		var value bool
-		switch v := entry.Value.(type) {
-		case bool:
-			value = v
-		default:
-			continue
-		}
-		botCache.Set(k, value, duration)
-	}
-
-	for k, entry := range state.Verified {
-		if entry.Expiration > 0 && entry.Expiration < now {
-			continue
-		}
-		duration := time.Duration(entry.Expiration - now)
-		if entry.Expiration == 0 {
-			duration = lru.NoExpiration
-		}
-
-		// Handle JSON unmarshaling
-		var value bool
-		switch v := entry.Value.(type) {
-		case bool:
-			value = v
-		default:
-			continue
-		}
-		verifiedCache.Set(k, value, duration)
-	}
+	loadCacheEntries(state.Rate, rateCache, convertRateValue)
+	loadCacheEntries(state.Bots, botCache, convertBoolValue)
+	loadCacheEntries(state.Verified, verifiedCache, convertBoolValue)
 }
 
 // ReconcileState merges file-based state with in-memory state.
 // For each cache type, it keeps the entry with the later expiration time.
 // This prevents multiple plugin instances from overwriting each other's fresh data.
 func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cache) {
-	now := time.Now().UnixNano()
-
-	// Get all in-memory items with their expiration times
 	rateItems := rateCache.Items()
 	botItems := botCache.Items()
 	verifiedItems := verifiedCache.Items()
 
-	// Reconcile rate cache
-	for k, fileEntry := range fileState.Rate {
-		if fileEntry.Expiration > 0 && fileEntry.Expiration <= now {
-			continue // Skip expired entries
-		}
-
-		// Handle JSON unmarshaling where numbers become float64
-		var value uint
-		switch v := fileEntry.Value.(type) {
-		case uint:
-			value = v
-		case float64:
-			value = uint(v)
-		case int:
-			value = uint(v)
-		default:
-			// Skip invalid types
-			continue
-		}
-
-		memItem, exists := rateItems[k]
-		if !exists {
-			// Entry only exists in file, add it
-			duration := time.Duration(fileEntry.Expiration - now)
-			if fileEntry.Expiration == 0 {
-				duration = lru.NoExpiration
-			}
-			rateCache.Set(k, value, duration)
-			continue
-		}
-
-		// Both exist - keep the one with later expiration (more recent data)
-		if fileEntry.Expiration > memItem.Expiration {
-			duration := time.Duration(fileEntry.Expiration - now)
-			if fileEntry.Expiration == 0 {
-				duration = lru.NoExpiration
-			}
-			rateCache.Set(k, value, duration)
-		}
-	}
-
-	// Reconcile bot cache
-	for k, fileEntry := range fileState.Bots {
-		if fileEntry.Expiration > 0 && fileEntry.Expiration < now {
-			continue
-		}
-
-		// Handle JSON unmarshaling
-		var value bool
-		switch v := fileEntry.Value.(type) {
-		case bool:
-			value = v
-		default:
-			continue
-		}
-
-		memItem, exists := botItems[k]
-		if !exists {
-			duration := time.Duration(fileEntry.Expiration - now)
-			if fileEntry.Expiration == 0 {
-				duration = lru.NoExpiration
-			}
-			botCache.Set(k, value, duration)
-			continue
-		}
-
-		if fileEntry.Expiration > memItem.Expiration {
-			duration := time.Duration(fileEntry.Expiration - now)
-			if fileEntry.Expiration == 0 {
-				duration = lru.NoExpiration
-			}
-			botCache.Set(k, value, duration)
-		}
-	}
-
-	// Reconcile verified cache (MOST CRITICAL - don't lose successful CAPTCHA verifications)
-	for k, fileEntry := range fileState.Verified {
-		if fileEntry.Expiration > 0 && fileEntry.Expiration < now {
-			continue
-		}
-
-		// Handle JSON unmarshaling
-		var value bool
-		switch v := fileEntry.Value.(type) {
-		case bool:
-			value = v
-		default:
-			continue
-		}
-
-		memItem, exists := verifiedItems[k]
-		if !exists {
-			duration := time.Duration(fileEntry.Expiration - now)
-			if fileEntry.Expiration == 0 {
-				duration = lru.NoExpiration
-			}
-			verifiedCache.Set(k, value, duration)
-			continue
-		}
-
-		if fileEntry.Expiration > memItem.Expiration {
-			duration := time.Duration(fileEntry.Expiration - now)
-			if fileEntry.Expiration == 0 {
-				duration = lru.NoExpiration
-			}
-			verifiedCache.Set(k, value, duration)
-		}
-	}
+	reconcileCacheEntries(fileState.Rate, rateItems, rateCache, convertRateValue)
+	reconcileCacheEntries(fileState.Bots, botItems, botCache, convertBoolValue)
+	reconcileCacheEntries(fileState.Verified, verifiedItems, verifiedCache, convertBoolValue)
 }
 
 // SaveStateToFile saves state to a file with locking and optional reconciliation.
@@ -359,4 +157,100 @@ func LoadStateFromFile(
 	SetState(loadedState, rateCache, botCache, verifiedCache)
 
 	return nil
+}
+
+func calculateDuration(expiration int64, now int64) time.Duration {
+	if expiration == 0 {
+		return lru.NoExpiration
+	}
+	return time.Duration(expiration - now)
+}
+
+func convertRateValue(v interface{}) (uint, bool) {
+	switch val := v.(type) {
+	case uint:
+		return val, true
+	case float64:
+		return uint(val), true
+	case int:
+		return uint(val), true
+	default:
+		return 0, false
+	}
+}
+
+func convertBoolValue(v interface{}) (bool, bool) {
+	switch val := v.(type) {
+	case bool:
+		return val, true
+	default:
+		return false, false
+	}
+}
+
+func getCacheEntries[T any](items map[string]lru.Item) (map[string]CacheEntry, uintptr) {
+	entries := make(map[string]CacheEntry, len(items))
+	var memoryUsage uintptr
+	memoryUsage = reflect.TypeOf(entries).Size()
+
+	for k, v := range items {
+		entries[k] = CacheEntry{
+			Value:      v.Object.(T),
+			Expiration: v.Expiration,
+		}
+		memoryUsage += reflect.TypeOf(k).Size()
+		memoryUsage += reflect.TypeOf(v).Size()
+		memoryUsage += uintptr(len(k))
+	}
+	return entries, memoryUsage
+}
+
+func loadCacheEntries[T any](
+	entries map[string]CacheEntry,
+	cache *lru.Cache,
+	converter func(interface{}) (T, bool),
+) {
+	now := time.Now().UnixNano()
+	for k, entry := range entries {
+		if entry.Expiration > 0 && entry.Expiration <= now {
+			continue
+		}
+		value, ok := converter(entry.Value)
+		if !ok {
+			continue
+		}
+		duration := calculateDuration(entry.Expiration, now)
+		cache.Set(k, value, duration)
+	}
+}
+
+func reconcileCacheEntries[T any](
+	fileEntries map[string]CacheEntry,
+	memItems map[string]lru.Item,
+	cache *lru.Cache,
+	converter func(interface{}) (T, bool),
+) {
+	now := time.Now().UnixNano()
+	for k, fileEntry := range fileEntries {
+		if fileEntry.Expiration > 0 && fileEntry.Expiration <= now {
+			continue
+		}
+
+		value, ok := converter(fileEntry.Value)
+		if !ok {
+			continue
+		}
+
+		duration := calculateDuration(fileEntry.Expiration, now)
+
+		memItem, exists := memItems[k]
+		if !exists {
+			cache.Set(k, value, duration)
+			continue
+		}
+
+		if fileEntry.Expiration > memItem.Expiration {
+			cache.Set(k, value, duration)
+		}
+	}
 }
