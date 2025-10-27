@@ -60,6 +60,7 @@ services:
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.secretKey: ${TURNSTILE_SECRET_KEY}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.goodBots: apple.com,archive.org,commoncrawl.org,duckduckgo.com,facebook.com,google.com,googlebot.com,googleusercontent.com,instagram.com,kagibot.org,linkedin.com,msn.com,openalex.org,twitter.com,x.com
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.persistentStateFile: /tmp/state.json
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableStateReconciliation: "false"
         networks:
             default:
                 aliases:
@@ -75,7 +76,7 @@ services:
             --providers.docker=true
             --providers.docker.network=default
             --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
-            --experimental.plugins.captcha-protect.version=v1.9.4
+            --experimental.plugins.captcha-protect.version=v1.10.1
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
