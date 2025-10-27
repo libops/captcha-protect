@@ -45,14 +45,15 @@ func SetState(state State, rateCache, botCache, verifiedCache *lru.Cache) {
 }
 
 // ReconcileState merges file-based state with in-memory state.
-// For each cache type, it keeps the entry with the later expiration time.
-// This prevents multiple plugin instances from overwriting each other's fresh data.
 func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cache) {
 	rateItems := rateCache.Items()
 	botItems := botCache.Items()
 	verifiedItems := verifiedCache.Items()
 
-	reconcileCacheEntries(fileState.Rate, rateItems, rateCache, convertRateValue)
+	// Use "max value wins" for rate cache
+	reconcileRateCache(fileState.Rate, rateItems, rateCache, convertRateValue)
+
+	// Use "later expiration wins" for bot and verified caches
 	reconcileCacheEntries(fileState.Bots, botItems, botCache, convertBoolValue)
 	reconcileCacheEntries(fileState.Verified, verifiedItems, verifiedCache, convertBoolValue)
 }
@@ -224,6 +225,8 @@ func loadCacheEntries[T any](
 	}
 }
 
+// reconcileCacheEntries implements "later expiration wins"
+// This is correct for bool flags (Verified, Bots).
 func reconcileCacheEntries[T any](
 	fileEntries map[string]CacheEntry,
 	memItems map[string]lru.Item,
@@ -253,4 +256,66 @@ func reconcileCacheEntries[T any](
 			cache.Set(k, value, duration)
 		}
 	}
+}
+
+// reconcileRateCache implements "max value wins" and "max expiration wins".
+// This prevents runaway growth (from summing) and accepts data loss
+// (under-counting) as the safer alternative.
+func reconcileRateCache(
+	fileEntries map[string]CacheEntry,
+	memItems map[string]lru.Item,
+	cache *lru.Cache,
+	converter func(interface{}) (uint, bool),
+) {
+	now := time.Now().UnixNano()
+	for k, fileEntry := range fileEntries {
+		if fileEntry.Expiration > 0 && fileEntry.Expiration <= now {
+			continue
+		}
+
+		fileValue, ok := converter(fileEntry.Value)
+		if !ok {
+			continue
+		}
+
+		memItem, exists := memItems[k]
+		if !exists {
+			// Entry only in file, just add it
+			duration := calculateDuration(fileEntry.Expiration, now)
+			cache.Set(k, fileValue, duration)
+			continue
+		}
+
+		// Entry in both, combine them
+		memValue, ok := memItem.Object.(uint)
+		if !ok {
+			// In-memory object is not uint, something is wrong.
+			// Overwrite with file value as a fallback.
+			duration := calculateDuration(fileEntry.Expiration, now)
+			cache.Set(k, fileValue, duration)
+			continue
+		}
+
+		// Use the HIGHEST value, not the sum
+		combinedValue := maxUint(fileValue, memValue)
+		// Use the LATER expiration
+		laterExpiration := max(fileEntry.Expiration, memItem.Expiration)
+
+		duration := calculateDuration(laterExpiration, now)
+		cache.Set(k, combinedValue, duration)
+	}
+}
+
+func max(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxUint(a, b uint) uint {
+	if a > b {
+		return a
+	}
+	return b
 }
