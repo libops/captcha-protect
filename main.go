@@ -26,7 +26,7 @@ import (
 
 const (
 	// StateSaveInterval is how often the persistent state file is written to disk
-	StateSaveInterval = 5 * time.Second
+	StateSaveInterval = 10 * time.Second
 	// StateSaveJitter is the maximum random jitter added to save interval to prevent thundering herd
 	StateSaveJitter = 2 * time.Second
 )

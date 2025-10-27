@@ -151,7 +151,7 @@ func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cac
 
 	// Reconcile rate cache
 	for k, fileEntry := range fileState.Rate {
-		if fileEntry.Expiration > 0 && fileEntry.Expiration < now {
+		if fileEntry.Expiration > 0 && fileEntry.Expiration <= now {
 			continue // Skip expired entries
 		}
 

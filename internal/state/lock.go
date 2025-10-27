@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -41,31 +42,85 @@ func (fl *FileLock) Lock() error {
 				// Successfully created lock file
 				_, err = f.WriteString(strconv.Itoa(fl.pid))
 				f.Close()
-				return err
+				// Check for write error
+				if err != nil {
+					// We got the lock but failed to write.
+					// Best effort to clean up, then return the error.
+					_ = os.Remove(fl.lockPath)
+					return fmt.Errorf("failed to write pid to lock file: %v", err)
+				}
+				// We hold the lock
+				return nil
 			}
 
+			// If we're here, os.OpenFile failed, likely because the file exists.
 			// Check if lock file is stale (older than 10 seconds)
-			if info, statErr := os.Stat(fl.lockPath); statErr == nil {
+			info, statErr := os.Stat(fl.lockPath)
+			if statErr == nil {
 				if time.Since(info.ModTime()) > 10*time.Second {
-					// Lock file is stale, remove it and try again
-					os.Remove(fl.lockPath)
+					// Lock file is stale, try to remove it
+					err = os.Remove(fl.lockPath)
+
+					if err != nil && !os.IsNotExist(err) {
+						// If we can't remove it (and it's not 'not exist'),
+						// something is wrong (e.g., permissions).
+						return fmt.Errorf("unable to remove stale lock: %v", err)
+					}
 				}
 			}
+			// If stat failed (e.g., file removed between OpenFile and Stat)
+			// or lock is not stale, just loop and wait for next tick.
 		}
 	}
 }
 
 // Unlock releases the exclusive lock by removing the lock file
+// This is now safer and checks the PID.
 func (fl *FileLock) Unlock() error {
-	return os.Remove(fl.lockPath)
+	content, err := os.ReadFile(fl.lockPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Already unlocked
+		}
+		return fmt.Errorf("failed to read lock file on unlock: %v", err)
+	}
+
+	lockPIDStr := string(content)
+	myPIDStr := strconv.Itoa(fl.pid)
+
+	if lockPIDStr != myPIDStr {
+		// This is not our lock. Do not remove it.
+		return fmt.Errorf("cannot unlock file held by different process (my_pid: %s, lock_pid: %s)", myPIDStr, lockPIDStr)
+	}
+
+	// It is our lock, remove it.
+	err = os.Remove(fl.lockPath)
+	if err != nil && !os.IsNotExist(err) {
+		// Failed to remove, and not because it was already gone
+		return fmt.Errorf("failed to remove our lock file: %v", err)
+	}
+
+	// Succeeded, or it was already gone (which is fine)
+	return nil
 }
 
-// Close is an alias for Unlock for compatibility
+// Close is an alias for Unlock for compatibility.
+// It will not return an error if the lock is held by another process.
 func (fl *FileLock) Close() error {
-	// Ignore error if lock file doesn't exist (already unlocked)
 	err := fl.Unlock()
-	if os.IsNotExist(err) {
-		return nil
+
+	// If Unlock fails, we only want to suppress the error
+	// if it's because the lock is held by someone else.
+	// In the context of Close(), this is fine.
+	if err != nil {
+		if strings.Contains(err.Error(), "cannot unlock file held by different process") {
+			return nil
+		}
+		// IsNotExist is already handled by Unlock, but this is safe.
+		if os.IsNotExist(err) {
+			return nil
+		}
 	}
+
 	return err
 }
