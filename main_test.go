@@ -937,15 +937,26 @@ func TestStatePersistence(t *testing.T) {
 
 	// Manually save state by writing the file directly
 	// This tests the state format without relying on the background goroutine
+	// Use the new CacheEntry format with expiration timestamps
+	futureExpiration := time.Now().Add(1 * time.Hour).UnixNano()
 	jsonData, _ := json.Marshal(map[string]interface{}{
-		"rate": map[string]uint{
-			"192.168.0.0": 10,
+		"rate": map[string]map[string]interface{}{
+			"192.168.0.0": {
+				"value":      uint(10),
+				"expiration": float64(futureExpiration),
+			},
 		},
-		"verified": map[string]bool{
-			"1.2.3.4": true,
+		"verified": map[string]map[string]interface{}{
+			"1.2.3.4": {
+				"value":      true,
+				"expiration": float64(futureExpiration),
+			},
 		},
-		"bots": map[string]bool{
-			"5.6.7.8": false,
+		"bots": map[string]map[string]interface{}{
+			"5.6.7.8": {
+				"value":      false,
+				"expiration": float64(futureExpiration),
+			},
 		},
 	})
 	err := os.WriteFile(tmpFile, jsonData, 0644)

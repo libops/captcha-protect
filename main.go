@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -21,6 +22,13 @@ import (
 	"github.com/libops/captcha-protect/internal/state"
 
 	lru "github.com/patrickmn/go-cache"
+)
+
+const (
+	// StateSaveInterval is how often the persistent state file is written to disk
+	StateSaveInterval = 10 * time.Second
+	// StateSaveJitter is the maximum random jitter added to save interval to prevent thundering herd
+	StateSaveJitter = 2 * time.Second
 )
 
 type Config struct {
@@ -49,7 +57,12 @@ type Config struct {
 	EnableStatsPage     string `json:"enableStatsPage"`
 	LogLevel            string `json:"loglevel,omitempty"`
 	PersistentStateFile string `json:"persistentStateFile"`
-	Mode                string `json:"mode"`
+	// EnableStateReconciliation is a string instead of bool due to Traefik's label parsing limitations
+	// When enabled, the plugin will read and merge state from disk before each save to prevent
+	// multiple instances from overwriting each other's data. This adds extra I/O overhead.
+	// Only enable this if running multiple plugin instances sharing the same state file.
+	EnableStateReconciliation string `json:"enableStateReconciliation"`
+	Mode                      string `json:"mode"`
 }
 
 type CaptchaProtect struct {
@@ -82,27 +95,28 @@ type captchaResponse struct {
 
 func CreateConfig() *Config {
 	return &Config{
-		RateLimit:             20,
-		Window:                86400,
-		IPv4SubnetMask:        16,
-		IPv6SubnetMask:        64,
-		IPForwardedHeader:     "",
-		ProtectParameters:     "false",
-		ProtectRoutes:         []string{},
-		ExcludeRoutes:         []string{},
-		ProtectHttpMethods:    []string{},
-		ProtectFileExtensions: []string{},
-		GoodBots:              []string{},
-		ExemptIPs:             []string{},
-		ExemptUserAgents:      []string{},
-		ChallengeURL:          "/challenge",
-		ChallengeTmpl:         "challenge.tmpl.html",
-		ChallengeStatusCode:   0,
-		EnableStatsPage:       "false",
-		LogLevel:              "INFO",
-		IPDepth:               0,
-		CaptchaProvider:       "turnstile",
-		Mode:                  "prefix",
+		RateLimit:                 20,
+		Window:                    86400,
+		IPv4SubnetMask:            16,
+		IPv6SubnetMask:            64,
+		IPForwardedHeader:         "",
+		ProtectParameters:         "false",
+		ProtectRoutes:             []string{},
+		ExcludeRoutes:             []string{},
+		ProtectHttpMethods:        []string{},
+		ProtectFileExtensions:     []string{},
+		GoodBots:                  []string{},
+		ExemptIPs:                 []string{},
+		ExemptUserAgents:          []string{},
+		ChallengeURL:              "/challenge",
+		ChallengeTmpl:             "challenge.tmpl.html",
+		ChallengeStatusCode:       0,
+		EnableStatsPage:           "false",
+		LogLevel:                  "INFO",
+		IPDepth:                   0,
+		CaptchaProvider:           "turnstile",
+		Mode:                      "prefix",
+		EnableStateReconciliation: "false",
 	}
 }
 
@@ -393,6 +407,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	}
 	if captchaResponse.Success {
 		bc.verifiedCache.Set(ip, true, lru.DefaultExpiration)
+
 		destination := req.FormValue("destination")
 		if destination == "" {
 			destination = "%2F"
@@ -580,7 +595,7 @@ func (bc *CaptchaProtect) registerRequest(ip string) {
 
 	_, err = bc.rateCache.IncrementUint(ip, uint(1))
 	if err != nil {
-		bc.log.Error("unable to set rate cache", "ip", ip)
+		bc.log.Error("unable to set rate cache", "ip", ip, "err", err)
 	}
 }
 
@@ -699,7 +714,13 @@ func (c *Config) ParseHttpMethods(log *slog.Logger) {
 }
 
 func (bc *CaptchaProtect) saveState(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Minute)
+	// Add random jitter to prevent multiple instances from trying to save simultaneously
+	jitter := time.Duration(rand.Intn(int(StateSaveJitter.Milliseconds()))) * time.Millisecond
+	interval := StateSaveInterval + jitter
+
+	bc.log.Debug("State save configured", "baseInterval", StateSaveInterval, "jitter", jitter, "actualInterval", interval)
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_CREATE|os.O_WRONLY, 0644)
@@ -713,49 +734,61 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			bc.log.Debug("Saving state")
-			state := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
-			jsonData, err := json.Marshal(state)
-			if err != nil {
-				bc.log.Error("failed to marshal state data", "err", err)
-				break
-			}
-			err = os.WriteFile(bc.config.PersistentStateFile, jsonData, 0644)
-			if err != nil {
-				bc.log.Error("failed to save state data", "err", err)
-			}
+			bc.log.Debug("Periodic state save triggered")
+			bc.saveStateNow()
 
 		case <-ctx.Done():
-			bc.log.Debug("Context cancelled, stopping saveState")
+			bc.log.Debug("Context cancelled, running saveState before shutdown")
+			bc.saveStateNow()
 			return
 		}
 	}
 }
 
+// saveStateNow performs an immediate state save using the state package.
+func (bc *CaptchaProtect) saveStateNow() {
+	reconcile := bc.config.EnableStateReconciliation == "true"
+
+	lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs, err := state.SaveStateToFile(
+		bc.config.PersistentStateFile,
+		reconcile,
+		bc.rateCache,
+		bc.botCache,
+		bc.verifiedCache,
+		bc.log,
+	)
+
+	if err != nil {
+		bc.log.Error("failed to save state", "err", err)
+		return
+	}
+
+	// Get current state for logging (already marshaled in SaveStateToFile, but we need counts)
+	currentState := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
+	bc.log.Debug("State saved successfully",
+		"rateEntries", len(currentState.Rate),
+		"botEntries", len(currentState.Bots),
+		"verifiedEntries", len(currentState.Verified),
+		"lockMs", lockMs,
+		"readMs", readMs,
+		"reconcileMs", reconcileMs,
+		"marshalMs", marshalMs,
+		"writeMs", writeMs,
+		"totalMs", totalMs,
+	)
+}
+
 func (bc *CaptchaProtect) loadState() {
-	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
-	if err != nil || len(fileContent) == 0 {
+	err := state.LoadStateFromFile(
+		bc.config.PersistentStateFile,
+		bc.rateCache,
+		bc.botCache,
+		bc.verifiedCache,
+	)
+
+	if err != nil {
 		bc.log.Warn("failed to load state file", "err", err)
 		return
-	}
-
-	var state state.State
-	err = json.Unmarshal(fileContent, &state)
-	if err != nil {
-		bc.log.Error("failed to unmarshal state file", "err", err)
-		return
-	}
-
-	for k, v := range state.Rate {
-		bc.rateCache.Set(k, v, lru.DefaultExpiration)
-	}
-
-	for k, v := range state.Bots {
-		bc.botCache.Set(k, v, lru.DefaultExpiration)
-	}
-
-	for k, v := range state.Verified {
-		bc.verifiedCache.Set(k, v, lru.DefaultExpiration)
 	}
 
 	bc.log.Info("Loaded previous state")

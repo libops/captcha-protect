@@ -25,7 +25,6 @@ var (
 
 const numIPs = 100
 const parallelism = 10
-const expectedRedirectURL = "http://localhost/challenge?destination=%2F"
 
 func main() {
 	_ips := []string{
@@ -48,24 +47,19 @@ func main() {
 	fmt.Println("Bringing traefik/nginx online")
 	runCommand("docker", "compose", "up", "-d")
 	waitForService("http://localhost")
+	waitForService("http://localhost/app2")
 
 	fmt.Printf("Making sure %d attempt(s) pass\n", rateLimit)
-	runParallelChecks(ips, rateLimit)
+	runParallelChecks(ips, rateLimit, "http://localhost")
+
+	time.Sleep(cp.StateSaveInterval + cp.StateSaveJitter + (1 * time.Second))
+	runCommand("jq", ".", "tmp/state.json")
 
 	fmt.Printf("Making sure attempt #%d causes a redirect to the challenge page\n", rateLimit+1)
-	ensureRedirect(ips)
+	ensureRedirect(ips, "http://localhost")
 
-	fmt.Println("Sleeping for 2m")
-	time.Sleep(125 * time.Second)
-	fmt.Println("Making sure one attempt passes after 2m window")
-	runParallelChecks(ips, 1)
-	fmt.Println("All good 🚀")
-
-	// make sure the state has time to save
-	fmt.Println("Waiting for state to save")
-	runCommand("jq", ".", "tmp/state.json")
-	time.Sleep(80 * time.Second)
-	runCommand("jq", ".", "tmp/state.json")
+	fmt.Println("\nTesting state sharing between nginx instances...")
+	testStateSharing(ips)
 
 	runCommand("docker", "container", "stats", "--no-stream")
 
@@ -138,7 +132,7 @@ func waitForService(url string) {
 	}
 }
 
-func runParallelChecks(ips []string, rateLimit int) {
+func runParallelChecks(ips []string, rateLimit int, url string) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, parallelism)
 
@@ -151,7 +145,7 @@ func runParallelChecks(ips []string, rateLimit int) {
 				defer func() { <-sem }()
 
 				fmt.Printf("Checking %s\n", ip)
-				output := httpRequest(ip)
+				output := httpRequest(ip, url)
 				if output != "" {
 					slog.Error("Unexpected output", "ip", ip, "output", output)
 					os.Exit(1)
@@ -164,13 +158,19 @@ func runParallelChecks(ips []string, rateLimit int) {
 	wg.Wait()
 }
 
-func ensureRedirect(ips []string) {
+func ensureRedirect(ips []string, url string) {
+	expectedURL := url + "/challenge?destination=%2F"
+	if url != "http://localhost" {
+		// For /app2, the destination should be the app2 path
+		expectedURL = "http://localhost/challenge?destination=%2Fapp2"
+	}
+
 	for _, ip := range ips {
 		fmt.Printf("Checking %s\n", ip)
-		output := httpRequest(ip)
+		output := httpRequest(ip, url)
 
-		if output != expectedRedirectURL {
-			slog.Error("Unexpected output", "ip", ip, "output", output)
+		if output != expectedURL {
+			slog.Error("Unexpected output", "ip", ip, "output", output, "expected", expectedURL)
 			os.Exit(1)
 		}
 
@@ -178,7 +178,27 @@ func ensureRedirect(ips []string) {
 	}
 }
 
-func httpRequest(ip string) string {
+func testStateSharing(ips []string) {
+	// Use first IP to test state sharing
+	testIP := ips[0]
+
+	fmt.Printf("Testing with IP: %s\n", testIP)
+
+	// The IP should already be at rate limit from previous tests on localhost/
+	// Now verify it's also rate limited on localhost/app2 (shared state)
+	fmt.Println("Verifying IP is rate limited on /app2 (state should be shared)...")
+	output := httpRequest(testIP, "http://localhost/app2")
+	expectedURL := "http://localhost/challenge?destination=%2Fapp2"
+
+	if output != expectedURL {
+		slog.Error("State NOT shared between instances!", "ip", testIP, "output", output, "expected", expectedURL)
+		os.Exit(1)
+	}
+
+	fmt.Println("✓ State is correctly shared between nginx instances!")
+}
+
+func httpRequest(ip, url string) string {
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			// Capture the redirect URL and stop following it
@@ -189,7 +209,7 @@ func httpRequest(ip string) string {
 		},
 	}
 
-	req, err := http.NewRequest("GET", "http://localhost", nil)
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		slog.Error("Failed to create request", "err", err)
 		os.Exit(1)

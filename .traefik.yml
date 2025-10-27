@@ -11,3 +11,4 @@ testData:
   CaptchaProvider: turnstile
   SiteKey: 1x00000000000000000000AA
   SecretKey: 1x0000000000000000000000000000000AA
+  EnableStateReconciliation: "false"

@@ -5,27 +5,13 @@ on:
       - main
     types:
       - closed
-permissions:
-  contents: write
-  actions: write
 jobs:
   release:
-    if: github.event.pull_request.merged == true && !contains(github.event.pull_request.title, '[skip-release]')
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
-        with:
-          fetch-depth: 0
-
-      - name: install autotag binary
-        run: curl -sL https://git.io/autotag-install | sudo sh -s -- -b /usr/bin
-
-      - name: create release
-        run: |-
-          TAG=$(autotag)
-          git push origin v$TAG
-          gh release create v$TAG --title "v$TAG" --generate-notes
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+    if: github.event.pull_request.merged == true && !contains(github.event.pull_request.title, 'skip-release')
+    uses: libops/actions/.github/workflows/bump-release.yaml@main
+    with:
+      prefix: v
+    permissions:
+      contents: write
+      actions: write
+    secrets: inherit
