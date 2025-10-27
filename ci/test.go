@@ -59,6 +59,8 @@ func main() {
 	ensureRedirect(ips, "http://localhost")
 
 	fmt.Println("\nTesting state sharing between nginx instances...")
+	time.Sleep(cp.StateSaveInterval + cp.StateSaveJitter + (1 * time.Second))
+
 	testStateSharing(ips)
 
 	runCommand("docker", "container", "stats", "--no-stream")
