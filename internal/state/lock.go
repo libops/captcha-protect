@@ -32,44 +32,49 @@ func (fl *FileLock) Lock() error {
 	defer ticker.Stop()
 
 	for {
+		// Try to create lock file exclusively
+		f, err := os.OpenFile(fl.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err == nil {
+			// Successfully created lock file
+			_, err = f.WriteString(strconv.Itoa(fl.pid))
+			f.Close()
+			// Check for write error
+			if err != nil {
+				// We got the lock but failed to write.
+				// Best effort to clean up, then return the error.
+				_ = os.Remove(fl.lockPath)
+				return fmt.Errorf("failed to write pid to lock file: %v", err)
+			}
+			// We hold the lock
+			return nil
+		}
+
+		// If we're here, os.OpenFile failed, likely because the file exists.
+		// Check if lock file is stale (older than 10 seconds)
+		info, statErr := os.Stat(fl.lockPath)
+		if statErr == nil {
+			if time.Since(info.ModTime()) > 10*time.Second {
+				// Lock file is stale, try to remove it
+				removeErr := os.Remove(fl.lockPath)
+
+				if removeErr != nil && !os.IsNotExist(removeErr) {
+					// If we can't remove it (and it's not 'not exist'),
+					// something is wrong (e.g., permissions).
+					return fmt.Errorf("unable to remove stale lock: %v", removeErr)
+				}
+				// Successfully removed stale lock, retry immediately
+				// This reduces the race window significantly
+				continue
+			}
+		}
+
+		// If stat failed (e.g., file removed between OpenFile and Stat)
+		// or lock is not stale, wait for next tick
 		select {
 		case <-timeout:
 			return fmt.Errorf("timeout waiting for file lock")
 		case <-ticker.C:
-			// Try to create lock file exclusively
-			f, err := os.OpenFile(fl.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
-			if err == nil {
-				// Successfully created lock file
-				_, err = f.WriteString(strconv.Itoa(fl.pid))
-				f.Close()
-				// Check for write error
-				if err != nil {
-					// We got the lock but failed to write.
-					// Best effort to clean up, then return the error.
-					_ = os.Remove(fl.lockPath)
-					return fmt.Errorf("failed to write pid to lock file: %v", err)
-				}
-				// We hold the lock
-				return nil
-			}
-
-			// If we're here, os.OpenFile failed, likely because the file exists.
-			// Check if lock file is stale (older than 10 seconds)
-			info, statErr := os.Stat(fl.lockPath)
-			if statErr == nil {
-				if time.Since(info.ModTime()) > 10*time.Second {
-					// Lock file is stale, try to remove it
-					err = os.Remove(fl.lockPath)
-
-					if err != nil && !os.IsNotExist(err) {
-						// If we can't remove it (and it's not 'not exist'),
-						// something is wrong (e.g., permissions).
-						return fmt.Errorf("unable to remove stale lock: %v", err)
-					}
-				}
-			}
-			// If stat failed (e.g., file removed between OpenFile and Stat)
-			// or lock is not stale, just loop and wait for next tick.
+			// Continue to next iteration
 		}
 	}
 }

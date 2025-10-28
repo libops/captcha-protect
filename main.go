@@ -61,6 +61,7 @@ type Config struct {
 	// When enabled, the plugin will read and merge state from disk before each save to prevent
 	// multiple instances from overwriting each other's data. This adds extra I/O overhead.
 	// Only enable this if running multiple plugin instances sharing the same state file.
+	// Performance warning: Not recommended for sites with >1M unique visitors (see internal/state/state_stress_test.go).
 	EnableStateReconciliation string `json:"enableStateReconciliation"`
 	Mode                      string `json:"mode"`
 }

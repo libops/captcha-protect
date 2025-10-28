@@ -40,10 +40,10 @@ jobs:
           fi
 
       - name: unit test
-        run: go test -v -race ./...
+        run: go test -v -skip 'TestStateOperationsWithinThreshold' -race ./...
 
       - name: generate coverage
-        run: go test -coverprofile=coverage.out -covermode=atomic $(go list ./... | grep -v '/ci')
+        run: go test -skip 'TestStateOperationsWithinThreshold' -coverprofile=coverage.out -covermode=atomic $(go list ./... | grep -v '/ci')
 
       - name: upload coverage to codecov
         uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5
