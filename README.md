@@ -120,7 +120,7 @@ services:
 | `enableStatsPage`       | `string`                | `"false"`                | Allows `exemptIps` to access `/captcha-protect/stats` to monitor the rate limiter.                                                                                                               |
 | `logLevel`              | `string`                | `"INFO"`                 | Log level for the middleware. Options: `ERROR`, `WARNING`, `INFO`, or `DEBUG`.                                                                                                                   |
 | `persistentStateFile`   | `string`                | `""`                     | File path to persist rate limiter state across Traefik restarts. In Docker, mount this file from the host.                                                                                       |
-| `enableStateReconciliation` | `string`            | `"false"`                | When `"true"`, reads and merges disk state before each save to prevent multiple instances from overwriting data. Adds extra I/O overhead. Only enable for multi-instance deployments sharing state. |
+| `enableStateReconciliation` | `string`            | `"false"`                | When `"true"`, reads and merges disk state before each save to prevent multiple instances from overwriting data. Adds extra I/O overhead. Only enable for multi-instance deployments sharing state. **Performance warning**: Not recommended for sites with >1M unique visitors due to reconciliation overhead (5-8s per cycle at scale). |
 
 
 ### Good Bots

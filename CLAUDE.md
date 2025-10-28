@@ -127,6 +127,12 @@ When `persistentStateFile` is configured:
 - Contains: rate limits per subnet, bot verification cache, verified IPs
 - **Important**: Each middleware instance runs its own save goroutine. If multiple instances share the same `persistentStateFile`, they will write more frequently (e.g., 2 instances = writes every ~5 seconds)
 - **State Reconciliation**: When `enableStateReconciliation: "true"`, each save performs a read-modify-write cycle to merge state from other instances. This adds I/O overhead but prevents data loss in multi-instance deployments (see `internal/state/state.go:86-100`)
+- **Performance Characteristics** (based on stress tests in `internal/state/state_stress_test.go`):
+  - **Small scale** (<100K IPs): Reconciliation adds <50ms overhead per cycle
+  - **Medium scale** (250K IPs): Reconciliation adds ~240ms overhead per cycle
+  - **Large scale** (1M IPs): Reconciliation adds ~1s overhead per cycle
+  - **XLarge scale** (5M IPs): Reconciliation adds ~5s overhead per cycle (approaching 10s save window limit)
+  - **Recommendation**: Do not enable `enableStateReconciliation` for sites with >1M unique visitors
 
 **Why not Redis?** Traefik plugins are loaded via Yaegi (a Go interpreter), which has significant limitations:
 - Yaegi cannot interpret Go packages that use `unsafe`, cgo, or complex reflection patterns
