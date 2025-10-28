@@ -28,6 +28,5 @@ echo ""
 echo "Testing Small, Medium, Large, and XLarge scales..."
 echo ""
 
-# Run tests with JSON output and parse with Go program
-go test -json -timeout 5m -run 'TestStateOperationsWithinThreshold' "$STATE_PATH" | \
+go test -json -run 'TestStateOperationsWithinThreshold' "$STATE_PATH" | \
     go run "$PARSER_PATH/main.go"

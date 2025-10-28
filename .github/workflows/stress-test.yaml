@@ -18,7 +18,7 @@ jobs:
 
       - name: Run stress tests
         id: stress_test
-        run: ./ci/run-stress-tests.sh 2>&1 | tee ./stress_output.log | tail -10 > stress_results.md
+        run: ./ci/run-stress-tests.sh > stress_results.md
 
       - name: Comment PR with stress test results
         uses: actions/github-script@v7
@@ -36,7 +36,7 @@ jobs:
 
             const botComment = comments.find(comment =>
               comment.user.type === 'Bot' &&
-              comment.body.includes('State Persistence Stress Test Results')
+              comment.body.includes('Running State Persistence Stress Tests')
             );
 
             const commentBody = results;

@@ -85,55 +85,88 @@ func main() {
 		}
 	}
 
-	// Print summary table
-	fmt.Println("\nStress Test Summary:")
-	fmt.Println("============================================================================================================")
-	fmt.Printf("%-8s | %-35s | %-10s | %-15s | %-10s | %-6s\n", "Scale", "Entries", "JSON Size", "Time", "Threshold", "Status")
-	fmt.Println("------------------------------------------------------------------------------------------------------------")
+	// Check if we should output Markdown (for CI) or plain text (for local)
+	inCI := os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != ""
 
 	allPassed := true
 	order := []string{"Small", "Medium", "Large", "XLarge"}
 
-	for _, name := range order {
-		result := results[name]
-		if result.Time == 0 {
-			continue // Skip if no data
-		}
-
-		size := result.Size
-		if size == "" {
-			size = "N/A"
-		}
-
-		status := "✅"
-		if !result.Passed {
-			status = "❌"
-			allPassed = false
-		}
-
-		thresholdStr := formatThreshold(result.Threshold)
-
-		fmt.Printf("%-8s | %-35s | %-10s | %-15s | %-10s | %s\n",
-			result.Name,
-			result.Entries,
-			size,
-			fmt.Sprintf("%dms", result.Time),
-			thresholdStr,
-			status)
-	}
-
-	fmt.Println()
-
-	// Check if running in CI
-	inCI := os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != ""
-
 	if inCI {
-		// In CI, just report metrics without failing
-		fmt.Println("ℹ️  Performance metrics reported (thresholds informational only in CI)")
-		if !allPassed {
-			fmt.Println("⚠️  Note: Some tests exceeded local development thresholds, but this is expected on CI runners")
+		// Markdown table for GitHub PR comments
+		fmt.Println("\n### Stress Test Summary")
+		fmt.Println("| Scale | Entries | JSON Size | Time | Threshold | Status |")
+		fmt.Println("|-------|---------|-----------|------|-----------|--------|")
+
+		for _, name := range order {
+			result := results[name]
+			if result.Time == 0 {
+				continue // Skip if no data
+			}
+
+			size := result.Size
+			if size == "" {
+				size = "N/A"
+			}
+
+			status := "✅"
+			if !result.Passed {
+				status = "❌"
+				allPassed = false
+			}
+
+			thresholdStr := formatThreshold(result.Threshold)
+
+			fmt.Printf("| %s | %s | %s | %dms | %s | %s |\n",
+				result.Name,
+				result.Entries,
+				size,
+				result.Time,
+				thresholdStr,
+				status)
 		}
+		fmt.Println()
+
+		// In CI, just report metrics without failing
+		fmt.Println("ℹ️ Performance metrics reported (thresholds informational only in CI)")
+		if !allPassed {
+			fmt.Println("   Note: Some tests exceeded local development thresholds, but this is expected on CI runners")
+		}
+
 	} else {
+		// ASCII table for local terminal
+		fmt.Println("\nStress Test Summary:")
+		fmt.Println("============================================================================================================")
+		fmt.Printf("%-8s | %-35s | %-10s | %-15s | %-10s | %-6s\n", "Scale", "Entries", "JSON Size", "Time", "Threshold", "Status")
+		fmt.Println("------------------------------------------------------------------------------------------------------------")
+
+		for _, name := range order {
+			result := results[name]
+			if result.Time == 0 {
+				continue // Skip if no data
+			}
+
+			size := result.Size
+			if size == "" {
+				size = "N/A"
+			}
+
+			status := "✅"
+			if !result.Passed {
+				status = "❌"
+				allPassed = false
+			}
+
+			thresholdStr := formatThreshold(result.Threshold)
+
+			fmt.Printf("%-8s | %-35s | %-10s | %-15s | %-10s | %s\n",
+				result.Name,
+				result.Entries,
+				size,
+				fmt.Sprintf("%dms", result.Time),
+				thresholdStr,
+				status)
+		}
+		fmt.Println()
 		// Local development: enforce thresholds
 		if allPassed {
 			fmt.Println("✅ All stress tests passed within thresholds")
