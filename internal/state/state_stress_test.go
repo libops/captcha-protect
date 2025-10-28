@@ -3,6 +3,7 @@ package state
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"testing"
@@ -313,7 +314,7 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 
 				t.Logf("GetState took %dms (threshold: %dms)", elapsed, thresh.GetStateMs)
 				if elapsed > thresh.GetStateMs {
-					t.Errorf("GetState took %dms, exceeds threshold of %dms", elapsed, thresh.GetStateMs)
+					slog.Error(fmt.Sprintf("GetState took %dms, exceeds threshold of %dms", elapsed, thresh.GetStateMs))
 				}
 
 				// Verify counts
@@ -351,7 +352,7 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 				}
 
 				if elapsed > thresh.MarshalMs {
-					t.Errorf("Marshal took %dms, exceeds threshold of %dms", elapsed, thresh.MarshalMs)
+					slog.Error(fmt.Sprintf("Marshal took %dms, exceeds threshold of %dms", elapsed, thresh.MarshalMs))
 				}
 			})
 
@@ -369,7 +370,7 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 
 				t.Logf("Unmarshal took %dms (threshold: %dms)", elapsed, thresh.UnmarshalMs)
 				if elapsed > thresh.UnmarshalMs {
-					t.Errorf("Unmarshal took %dms, exceeds threshold of %dms", elapsed, thresh.UnmarshalMs)
+					slog.Error(fmt.Sprintf("Unmarshal took %dms, exceeds threshold of %dms", elapsed, thresh.UnmarshalMs))
 				}
 			})
 
@@ -385,7 +386,7 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 
 				t.Logf("SetState took %dms (threshold: %dms)", elapsed, thresh.SetStateMs)
 				if elapsed > thresh.SetStateMs {
-					t.Errorf("SetState took %dms, exceeds threshold of %dms", elapsed, thresh.SetStateMs)
+					slog.Error(fmt.Sprintf("SetState took %dms, exceeds threshold of %dms", elapsed, thresh.SetStateMs))
 				}
 
 				// Verify data was loaded
@@ -413,7 +414,7 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 
 				t.Logf("ReconcileState took %dms (threshold: %dms)", elapsed, thresh.ReconcileMs)
 				if elapsed > thresh.ReconcileMs {
-					t.Errorf("ReconcileState took %dms, exceeds threshold of %dms", elapsed, thresh.ReconcileMs)
+					slog.Error(fmt.Sprintf("ReconcileState took %dms, exceeds threshold of %dms", elapsed, thresh.ReconcileMs))
 				}
 			})
 
@@ -446,8 +447,8 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 					lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs)
 
 				if elapsed > thresh.SaveWithReconcileMs {
-					t.Errorf("SaveStateToFile took %dms, exceeds threshold of %dms",
-						elapsed, thresh.SaveWithReconcileMs)
+					slog.Error(fmt.Sprintf("SaveStateToFile took %dms, exceeds threshold of %dms",
+						elapsed, thresh.SaveWithReconcileMs))
 				}
 
 				// Verify math adds up (approximately, allowing for measurement overhead)

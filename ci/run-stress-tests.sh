@@ -8,7 +8,7 @@ if [ -d "./internal/state" ]; then
 elif [ -d "../internal/state" ]; then
     STATE_PATH="../internal/state"
 else
-    echo "Error: Cannot find internal/state directory"
+    echo "Error: Cannot find internal/state directory" >&2
     exit 1
 fi
 
@@ -18,7 +18,7 @@ if [ -d "./ci/parse-stress-results" ]; then
 elif [ -d "./parse-stress-results" ]; then
     PARSER_PATH="./parse-stress-results"
 else
-    echo "Error: Cannot find parse-stress-results directory"
+    echo "Error: Cannot find parse-stress-results directory" >&2
     exit 1
 fi
 
