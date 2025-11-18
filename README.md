@@ -65,6 +65,8 @@ services:
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.goodBots: apple.com,archive.org,commoncrawl.org,duckduckgo.com,facebook.com,google.com,googlebot.com,googleusercontent.com,instagram.com,kagibot.org,linkedin.com,msn.com,openalex.org,twitter.com,x.com
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.persistentStateFile: /tmp/state.json
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableStateReconciliation: "false"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.periodSeconds: 30
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.failureThreshold: 3
         networks:
             default:
                 aliases:
@@ -80,7 +82,7 @@ services:
             --providers.docker=true
             --providers.docker.network=default
             --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
-            --experimental.plugins.captcha-protect.version=v1.10.1
+            --experimental.plugins.captcha-protect.version=v1.11.0
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
@@ -106,8 +108,8 @@ services:
 | `captchaProvider`       | `string` (required)     | `""`                     | The captcha type to use. Supported values: `turnstile`, `hcaptcha`, `recaptcha`, and `poj` (proof-of-javascript).                                                                                |
 | `siteKey`               | `string` (required)     | `""`                     | The captcha site key.                                                                                                                                                                            |
 | `secretKey`             | `string` (required)     | `""`                     | The captcha secret key.                                                                                                                                                                          |
-| `periodSeconds`         | `int`                   | `30`                     | Health check interval (in seconds) for the primary captcha provider. The circuit breaker uses this to detect provider outages.                                                                   |
-| `failureThreshold`      | `int`                   | `3`                      | Number of consecutive health check failures before the circuit breaker opens and switches to proof-of-javascript fallback.                                                                       |
+| `periodSeconds`         | `int`                   | `0`                      | Health check interval (in seconds) for the primary captcha provider. The circuit breaker uses this to detect provider outages.                                                                   |
+| `failureThreshold`      | `int`                   | `0`                      | Number of consecutive health check failures before the circuit breaker opens and switches to proof-of-javascript fallback.                                                                       |
 | `rateLimit`             | `uint`                  | `20`                     | Maximum requests allowed from a subnet before a challenge is triggered.                                                                                                                          |
 | `window`                | `int`                   | `86400`                  | Duration (in seconds) for monitoring requests per subnet.                                                                                                                                        |
 | `ipv4subnetMask`        | `int`                   | `16`                     | CIDR subnet mask to group IPv4 addresses for rate limiting.                                                                                                                                      |

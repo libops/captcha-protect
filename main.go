@@ -31,9 +31,9 @@ const (
 	// StateSaveJitter is the maximum random jitter added to save interval to prevent thundering herd
 	StateSaveJitter = 2 * time.Second
 
-	// Default health check settings
-	DefaultHealthCheckPeriodSeconds    = 30 // How often to check captcha provider health
-	DefaultHealthCheckFailureThreshold = 3  // Number of consecutive health check failures before opening circuit
+	// Default health check settings (disabled by default)
+	DefaultHealthCheckPeriodSeconds    = 0 // How often to check captcha provider health
+	DefaultHealthCheckFailureThreshold = 0 // Number of consecutive health check failures before opening circuit
 )
 
 type circuitState int
@@ -300,7 +300,7 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	}
 
 	// Enable circuit breaker health checks if period/threshold are configured
-	if config.CaptchaProvider != "poj" && config.PeriodSeconds > 0 && config.FailureThreshold > 0 {
+	if config.CaptchaProvider != "poj" && config.PeriodSeconds > DefaultHealthCheckPeriodSeconds && config.FailureThreshold > DefaultHealthCheckFailureThreshold {
 		bc.hasFallbackProvider = true
 		bc.circuitState = circuitClosed
 		log.Info("Circuit breaker enabled - will auto-pass when captcha provider is down",
