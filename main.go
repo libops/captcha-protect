@@ -366,7 +366,7 @@ func getCaptchaConfig(provider string) CaptchaConfig {
 }
 
 // getActiveCaptchaConfig returns the currently active captcha config based on circuit breaker state.
-// When circuit is open, returns the proof-of-work provider as a fallback.
+// When circuit is open, returns the proof-of-javascript provider as a fallback.
 func (bc *CaptchaProtect) getActiveCaptchaConfig() CaptchaConfig {
 	if !bc.hasFallbackProvider {
 		return bc.captchaConfig
@@ -376,7 +376,7 @@ func (bc *CaptchaProtect) getActiveCaptchaConfig() CaptchaConfig {
 	defer bc.mu.RUnlock()
 
 	if bc.circuitState == circuitOpen {
-		// Return proof-of-work provider as fallback
+		// Return proof-of-javascript provider as fallback
 		return getCaptchaConfig("poj")
 	}
 
@@ -482,7 +482,7 @@ func (bc *CaptchaProtect) recordHealthCheckFailure() {
 func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	clientIP, ipRange := bc.getClientIP(req)
 
-	// Serve proof-of-work JS
+	// Serve proof-of-javascript JS
 	if req.URL.Path == "/captcha-protect-poj.js" {
 		bc.servePojJS(rw)
 		return
@@ -535,7 +535,7 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	http.Redirect(rw, req, redirectURL, http.StatusFound)
 }
 
-// servePojJS serves the proof-of-work JavaScript implementation.
+// servePojJS serves the proof-of-javascript JavaScript implementation.
 // This is used as a fallback captcha provider when external providers are unavailable.
 func (bc *CaptchaProtect) servePojJS(rw http.ResponseWriter) {
 	js := helper.GetPojJS()
@@ -583,7 +583,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	var success bool
 	exp := lru.DefaultExpiration
 
-	// Handle proof-of-work verification
+	// Handle proof-of-javascript verification
 	if activeConfig.validate == "internal" {
 		success = true
 		// if the circuit is open, default to one hour TTL on verification

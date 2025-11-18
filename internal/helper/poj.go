@@ -4,7 +4,7 @@ package helper
 func GetPojJS() string {
 	return `// Proof of Javascript CAPTCHA
 (function() {
-    function initPoW() {
+    function initPoJ() {
         var captchaDiv = document.querySelector('[data-callback]');
         if (!captchaDiv) {
             console.error('PoW: captcha div not found');
@@ -13,17 +13,31 @@ func GetPojJS() string {
 
         var callbackName = captchaDiv.getAttribute('data-callback');
 
-        if (!callbackName) {
+        if (!callbackName || typeof window[callbackName] !== 'function') {
             console.error('PoW: missing callback or challenge');
             return;
         }
-        callbackName("foo")
+        var form = document.getElementById("captcha-form");
+        var captchaDiv = document.querySelector('[data-callback]');
+        var frontendKey = captchaDiv.className;
+
+        // Create hidden input for the token if it doesn't exist
+        var inputName = frontendKey + "-response";
+        var existingInput = form.querySelector('input[name="' + inputName + '"]');
+        if (!existingInput) {
+            var input = document.createElement("input");
+            input.type = "hidden";
+            input.name = inputName;
+            input.value = "foo";
+            form.appendChild(input);
+        }
+        window[callbackName]("foo");
     }
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initPoW);
+        document.addEventListener('DOMContentLoaded', initPoJ);
     } else {
-        initPoW();
+        initPoJ();
     }
 })();`
 }
