@@ -145,8 +145,9 @@ The circuit breaker provides automatic failover when the primary captcha provide
 - Self-contained (no external dependencies)
 
 **Configuration:**
-- Circuit breaker is **enabled by default** with `periodSeconds: 30` and `failureThreshold: 3`
-- To disable: set both `periodSeconds: 0` and `failureThreshold: 0`
+- Circuit breaker is enabled by setting two config settings: `periodSeconds` and `failureThreshold`
+  - e.g. `periodSeconds: 30` and `failureThreshold: 3`
+- To disable: set both `periodSeconds: 0` and `failureThreshold: 0` (the default config)
 - The `poj` provider can also be used directly as the primary provider (no circuit breaker needed)
 
 ### Good Bots
