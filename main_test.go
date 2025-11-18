@@ -3,7 +3,6 @@ package captcha_protect
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -1303,12 +1302,12 @@ func TestHealthCheckOpensCircuit(t *testing.T) {
 		t.Errorf("Expected circuit to be open after %d health check failures, got state %v", config.FailureThreshold, state)
 	}
 
-	// Should now return PoW provider config
+	// Should now return PoJ provider config
 	activeConfig := bc.getActiveCaptchaConfig()
-	if activeConfig.js != "/captcha-protect-pow.js" {
+	if activeConfig.js != "/captcha-protect-poj.js" {
 		t.Errorf("Expected PoW JS path, got %s", activeConfig.js)
 	}
-	if activeConfig.key != "pow-captcha" {
+	if activeConfig.key != "poj-captcha" {
 		t.Errorf("Expected pow-captcha key, got %s", activeConfig.key)
 	}
 	if activeConfig.validate != "internal" {
@@ -1449,9 +1448,9 @@ func TestGetCaptchaConfig(t *testing.T) {
 			wantKey:  "h-captcha",
 		},
 		{
-			provider: "pow",
-			wantJS:   "/captcha-protect-pow.js",
-			wantKey:  "pow-captcha",
+			provider: "poj",
+			wantJS:   "/captcha-protect-poj.js",
+			wantKey:  "poj-captcha",
 		},
 		{
 			provider: "invalid",
@@ -1473,7 +1472,7 @@ func TestGetCaptchaConfig(t *testing.T) {
 	}
 }
 
-func TestServePowJS(t *testing.T) {
+func TestServePojJS(t *testing.T) {
 	config := CreateConfig()
 	config.SiteKey = "test-key"
 	config.SecretKey = "test-secret"
@@ -1484,7 +1483,7 @@ func TestServePowJS(t *testing.T) {
 		t.Fatalf("Failed to create CaptchaProtect: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/captcha-protect-pow.js", nil)
+	req := httptest.NewRequest(http.MethodGet, "/captcha-protect-poj.js", nil)
 	rw := httptest.NewRecorder()
 
 	bc.ServeHTTP(rw, req)
@@ -1499,11 +1498,8 @@ func TestServePowJS(t *testing.T) {
 	}
 
 	body := rw.Body.String()
-	if !strings.Contains(body, "sha256") {
-		t.Error("Expected PoW JS to contain sha256 function")
-	}
-	if !strings.Contains(body, "data-challenge") {
-		t.Error("Expected PoW JS to reference data-challenge")
+	if !strings.Contains(body, "data-callback") {
+		t.Error("Expected PoJ JS to reference data-callback")
 	}
 }
 
@@ -1512,7 +1508,7 @@ func TestVerifyPowChallenge(t *testing.T) {
 	config.SiteKey = "test-key"
 	config.SecretKey = "test-secret"
 	config.ProtectRoutes = []string{"/"}
-	config.CaptchaProvider = "pow"
+	config.CaptchaProvider = "poj"
 
 	bc, err := NewCaptchaProtect(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {}), config, "test")
 	if err != nil {
@@ -1522,29 +1518,20 @@ func TestVerifyPowChallenge(t *testing.T) {
 	tests := []struct {
 		name           string
 		challenge      string
-		nonce          int
 		expectedStatus int
 	}{
 		{
-			name:           "Valid PoW solution",
+			name:           "Valid PoJ",
 			challenge:      "test-challenge",
-			nonce:          45524, // Valid nonce for this challenge with difficulty 4
 			expectedStatus: http.StatusFound,
-		},
-		{
-			name:           "Invalid PoW solution",
-			challenge:      "test-challenge",
-			nonce:          0, // Invalid nonce
-			expectedStatus: http.StatusForbidden,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create POST request with PoW token
-			token := fmt.Sprintf("%s:%d", tt.challenge, tt.nonce)
 			form := url.Values{}
-			form.Add("pow-captcha-response", token)
+			form.Add("poj-captcha-response", "foo")
 			form.Add("destination", "/")
 
 			req := httptest.NewRequest(http.MethodPost, "/challenge", strings.NewReader(form.Encode()))
@@ -1562,7 +1549,7 @@ func TestVerifyPowChallenge(t *testing.T) {
 	}
 }
 
-func TestCircuitBreakerUsesPowProvider(t *testing.T) {
+func TestCircuitBreakerUsesPojProvider(t *testing.T) {
 	config := CreateConfig()
 	config.SiteKey = "test-key"
 	config.SecretKey = "test-secret"
@@ -1587,13 +1574,13 @@ func TestCircuitBreakerUsesPowProvider(t *testing.T) {
 		bc.recordHealthCheckFailure()
 	}
 
-	// Now should use PoW provider
+	// Now should use PoJ provider
 	activeConfig = bc.getActiveCaptchaConfig()
-	if activeConfig.js != "/captcha-protect-pow.js" {
-		t.Errorf("Expected PoW provider when circuit is open, got %s", activeConfig.js)
+	if activeConfig.js != "/captcha-protect-poj.js" {
+		t.Errorf("Expected PoJ provider when circuit is open, got %s", activeConfig.js)
 	}
-	if activeConfig.key != "pow-captcha" {
-		t.Errorf("Expected pow-captcha key when circuit is open, got %s", activeConfig.key)
+	if activeConfig.key != "poj-captcha" {
+		t.Errorf("Expected poj-captcha key when circuit is open, got %s", activeConfig.key)
 	}
 	if activeConfig.validate != "internal" {
 		t.Errorf("Expected internal validation when circuit is open, got %s", activeConfig.validate)
@@ -1609,12 +1596,12 @@ func TestCircuitBreakerUsesPowProvider(t *testing.T) {
 	}
 }
 
-func TestPowChallengeGeneration(t *testing.T) {
+func TestPojChallengeGeneration(t *testing.T) {
 	config := CreateConfig()
 	config.SiteKey = "test-key"
 	config.SecretKey = "test-secret"
 	config.ProtectRoutes = []string{"/"}
-	config.CaptchaProvider = "pow"
+	config.CaptchaProvider = "poj"
 	config.PeriodSeconds = 0 // Disable circuit breaker
 	config.FailureThreshold = 0
 
@@ -1635,13 +1622,10 @@ func TestPowChallengeGeneration(t *testing.T) {
 	body := rw.Body.String()
 
 	// Check that challenge and difficulty are included in the response
-	if !strings.Contains(body, "data-challenge=") {
-		t.Errorf("Expected data-challenge attribute in PoW challenge page")
+	if !strings.Contains(body, "data-callback=") {
+		t.Errorf("Expected data-callback attribute in PoW challenge page")
 	}
-	if !strings.Contains(body, "data-difficulty=") {
-		t.Errorf("Expected data-difficulty attribute in PoW challenge page")
-	}
-	if !strings.Contains(body, "/captcha-protect-pow.js") {
-		t.Errorf("Expected PoW JS URL in challenge page")
+	if !strings.Contains(body, "/captcha-protect-poj.js") {
+		t.Errorf("Expected PoJ JS URL in challenge page")
 	}
 }
