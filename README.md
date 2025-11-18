@@ -130,11 +130,11 @@ services:
 | `persistentStateFile`   | `string`                | `""`                     | File path to persist rate limiter state across Traefik restarts. In Docker, mount this file from the host.                                                                                       |
 | `enableStateReconciliation` | `string`            | `"false"`                | When `"true"`, reads and merges disk state before each save to prevent multiple instances from overwriting data. Adds extra I/O overhead. Only enable for multi-instance deployments sharing state. **Performance warning**: Not recommended for sites with >1M unique visitors due to reconciliation overhead (5-8s per cycle at scale). |
 
-### Circuit Breaker
+### Circuit Breaker (failover if a captcha provider is unavailable)
 
 The circuit breaker provides automatic failover when the primary captcha provider (Turnstile, reCAPTCHA, or hCaptcha) becomes unavailable. When enabled, it:
 
-1. **Monitors provider health**: Periodically sends HEAD requests to the provider's JavaScript file (every `periodSeconds`, default 30s). Also records 5xx errors on server side validation.
+1. **Enables a liveness probe on the captcha provider**: Periodically sends HEAD requests to the provider's JavaScript file (every `periodSeconds`, default 30s). Also records 5xx errors during server side validation.
 2. **Detects failures**: Counts consecutive health check failures
 3. **Opens circuit**: After `failureThreshold` consecutive failures (default 3), switches to proof-of-javascript fallback
 4. **Falls back to PoJ**: Ensures user is loading javascript. Requires revalidating in 1hr
