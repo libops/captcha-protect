@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -29,6 +30,17 @@ const (
 	StateSaveInterval = 10 * time.Second
 	// StateSaveJitter is the maximum random jitter added to save interval to prevent thundering herd
 	StateSaveJitter = 2 * time.Second
+
+	// Default health check settings (disabled by default)
+	DefaultHealthCheckPeriodSeconds    = 0 // How often to check captcha provider health
+	DefaultHealthCheckFailureThreshold = 0 // Number of consecutive health check failures before opening circuit
+)
+
+type circuitState int
+
+const (
+	circuitClosed circuitState = iota // Normal operation, using primary provider
+	circuitOpen                       // Circuit tripped, using fallback provider
 )
 
 type Config struct {
@@ -64,6 +76,8 @@ type Config struct {
 	// Performance warning: Not recommended for sites with >1M unique visitors (see internal/state/state_stress_test.go).
 	EnableStateReconciliation string `json:"enableStateReconciliation"`
 	Mode                      string `json:"mode"`
+	PeriodSeconds             int    `json:"periodSeconds"`
+	FailureThreshold          int    `json:"failureThreshold"`
 }
 
 type CaptchaProtect struct {
@@ -82,6 +96,12 @@ type CaptchaProtect struct {
 	ipv6Mask           net.IPMask
 	protectRoutesRegex []*regexp.Regexp
 	excludeRoutesRegex []*regexp.Regexp
+
+	// Circuit breaker fields
+	mu                      sync.RWMutex
+	circuitState            circuitState
+	healthCheckFailureCount int
+	hasFallbackProvider     bool
 }
 
 type CaptchaConfig struct {
@@ -118,6 +138,8 @@ func CreateConfig() *Config {
 		CaptchaProvider:           "turnstile",
 		Mode:                      "prefix",
 		EnableStateReconciliation: "false",
+		PeriodSeconds:             DefaultHealthCheckPeriodSeconds,
+		FailureThreshold:          DefaultHealthCheckFailureThreshold,
 	}
 }
 
@@ -272,27 +294,28 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	// set the captcha config based on the provider
 	// thanks to https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin/blob/4708d76854c7ae95fa7313c46fbe21959be2fff1/pkg/captcha/captcha.go#L39-L55
 	// for the struct/idea
-	switch config.CaptchaProvider {
-	case "hcaptcha":
-		bc.captchaConfig = CaptchaConfig{
-			js:       "https://hcaptcha.com/1/api.js",
-			key:      "h-captcha",
-			validate: "https://api.hcaptcha.com/siteverify",
-		}
-	case "recaptcha":
-		bc.captchaConfig = CaptchaConfig{
-			js:       "https://www.google.com/recaptcha/api.js",
-			key:      "g-recaptcha",
-			validate: "https://www.google.com/recaptcha/api/siteverify",
-		}
-	case "turnstile":
-		bc.captchaConfig = CaptchaConfig{
-			js:       "https://challenges.cloudflare.com/turnstile/v0/api.js",
-			key:      "cf-turnstile",
-			validate: "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-		}
-	default:
+	bc.captchaConfig = getCaptchaConfig(config.CaptchaProvider)
+	if bc.captchaConfig.js == "" {
 		return nil, fmt.Errorf("invalid captcha provider: %s", config.CaptchaProvider)
+	}
+
+	// Enable circuit breaker health checks if period/threshold are configured
+	if config.CaptchaProvider != "poj" && config.PeriodSeconds > DefaultHealthCheckPeriodSeconds && config.FailureThreshold > DefaultHealthCheckFailureThreshold {
+		bc.hasFallbackProvider = true
+		bc.circuitState = circuitClosed
+		log.Info("Circuit breaker enabled - will auto-pass when captcha provider is down",
+			"provider", config.CaptchaProvider,
+			"periodSeconds", config.PeriodSeconds,
+			"failureThreshold", config.FailureThreshold)
+
+		// Start health check goroutine
+		childCtx, cancel := context.WithCancel(ctx)
+		go bc.healthCheckLoop(childCtx)
+		go func() {
+			<-ctx.Done()
+			log.Debug("Context canceled, stopping health check")
+			cancel()
+		}()
 	}
 
 	if config.PersistentStateFile != "" {
@@ -309,8 +332,162 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	return &bc, nil
 }
 
+// getCaptchaConfig returns the captcha configuration for a given provider.
+// Returns an empty CaptchaConfig if the provider is invalid.
+func getCaptchaConfig(provider string) CaptchaConfig {
+	switch provider {
+	case "hcaptcha":
+		return CaptchaConfig{
+			js:       "https://hcaptcha.com/1/api.js",
+			key:      "h-captcha",
+			validate: "https://api.hcaptcha.com/siteverify",
+		}
+	case "recaptcha":
+		return CaptchaConfig{
+			js:       "https://www.google.com/recaptcha/api.js",
+			key:      "g-recaptcha",
+			validate: "https://www.google.com/recaptcha/api/siteverify",
+		}
+	case "turnstile":
+		return CaptchaConfig{
+			js:       "https://challenges.cloudflare.com/turnstile/v0/api.js",
+			key:      "cf-turnstile",
+			validate: "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+		}
+	case "poj":
+		return CaptchaConfig{
+			js:       "/captcha-protect-poj.js",
+			key:      "poj-captcha",
+			validate: "internal",
+		}
+	default:
+		return CaptchaConfig{}
+	}
+}
+
+// getActiveCaptchaConfig returns the currently active captcha config based on circuit breaker state.
+// When circuit is open, returns the proof-of-javascript provider as a fallback.
+func (bc *CaptchaProtect) getActiveCaptchaConfig() CaptchaConfig {
+	if !bc.hasFallbackProvider {
+		return bc.captchaConfig
+	}
+
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+
+	if bc.circuitState == circuitOpen {
+		// Return proof-of-javascript provider as fallback
+		return getCaptchaConfig("poj")
+	}
+
+	return bc.captchaConfig
+}
+
+// healthCheckLoop periodically checks the health of the primary captcha provider.
+// If consecutive failures exceed the threshold, it opens the circuit to use the fallback provider.
+func (bc *CaptchaProtect) healthCheckLoop(ctx context.Context) {
+	period := time.Duration(bc.config.PeriodSeconds) * time.Second
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+
+	bc.log.Debug("Health check loop started", "period", period, "threshold", bc.config.FailureThreshold)
+
+	for {
+		select {
+		case <-ticker.C:
+			bc.performHealthCheck()
+		case <-ctx.Done():
+			bc.log.Debug("Health check loop stopped")
+			return
+		}
+	}
+}
+
+// performHealthCheck executes a HEAD request to the primary captcha provider's JS file
+// and updates the circuit breaker state based on the response.
+func (bc *CaptchaProtect) performHealthCheck() {
+	// Perform HEAD request to primary provider's JS URL
+	req, err := http.NewRequest(http.MethodHead, bc.captchaConfig.js, nil)
+	if err != nil {
+		bc.log.Error("Failed to create health check request", "url", bc.captchaConfig.js, "err", err)
+		bc.recordHealthCheckFailure()
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := bc.httpClient.Do(req)
+	if err != nil {
+		bc.log.Warn("Health check failed for primary provider", "url", bc.captchaConfig.js, "err", err)
+		bc.recordHealthCheckFailure()
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+		bc.recordHealthCheckSuccess()
+		return
+	}
+
+	bc.log.Warn("Health check returned error status", "url", bc.captchaConfig.js, "statusCode", resp.StatusCode)
+	bc.recordHealthCheckFailure()
+}
+
+// recordHealthCheckSuccess resets the failure count and closes the circuit if it was open.
+func (bc *CaptchaProtect) recordHealthCheckSuccess() {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
+	previousState := bc.circuitState
+	previousFailureCount := bc.healthCheckFailureCount
+
+	bc.healthCheckFailureCount = 0
+
+	if bc.circuitState == circuitOpen {
+		bc.circuitState = circuitClosed
+		bc.log.Info("Circuit breaker closed, returning to primary captcha provider",
+			"provider", bc.config.CaptchaProvider,
+			"previousFailures", previousFailureCount)
+	} else if previousFailureCount > 0 {
+		bc.log.Debug("Health check success, failure count reset", "previousFailures", previousFailureCount)
+	}
+
+	if previousState == circuitOpen {
+		bc.log.Debug("Circuit breaker state", "state", "closed", "failureCount", 0)
+	}
+}
+
+// recordHealthCheckFailure increments the failure count and opens the circuit if threshold is reached.
+func (bc *CaptchaProtect) recordHealthCheckFailure() {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
+	bc.healthCheckFailureCount++
+
+	bc.log.Debug("Health check failure recorded",
+		"failureCount", bc.healthCheckFailureCount,
+		"threshold", bc.config.FailureThreshold)
+
+	if bc.healthCheckFailureCount >= bc.config.FailureThreshold && bc.circuitState == circuitClosed {
+		bc.circuitState = circuitOpen
+		bc.log.Error("Circuit breaker opened, auto-passing users through",
+			"provider", bc.config.CaptchaProvider,
+			"failureCount", bc.healthCheckFailureCount,
+			"threshold", bc.config.FailureThreshold)
+	}
+}
+
 func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	clientIP, ipRange := bc.getClientIP(req)
+
+	// Serve proof-of-javascript JS
+	if req.URL.Path == "/captcha-protect-poj.js" {
+		bc.servePojJS(rw)
+		return
+	}
+
 	challengeOnPage := bc.ChallengeOnPage()
 	if challengeOnPage && req.Method == http.MethodPost {
 		if req.URL.Query().Get("challenge") != "" {
@@ -358,11 +535,24 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	http.Redirect(rw, req, redirectURL, http.StatusFound)
 }
 
+// servePojJS serves the proof-of-javascript JavaScript implementation.
+// This is used as a fallback captcha provider when external providers are unavailable.
+func (bc *CaptchaProtect) servePojJS(rw http.ResponseWriter) {
+	js := helper.GetPojJS()
+
+	rw.Header().Set("Content-Type", "application/javascript")
+	rw.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	rw.WriteHeader(http.StatusOK)
+	_, _ = rw.Write([]byte(js))
+}
+
 func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, destination string) {
+	activeConfig := bc.getActiveCaptchaConfig()
+
 	d := map[string]string{
 		"SiteKey":      bc.config.SiteKey,
-		"FrontendJS":   bc.captchaConfig.js,
-		"FrontendKey":  bc.captchaConfig.key,
+		"FrontendJS":   activeConfig.js,
+		"FrontendKey":  activeConfig.key,
 		"ChallengeURL": bc.config.ChallengeURL,
 		"Destination":  destination,
 	}
@@ -382,32 +572,54 @@ func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, destination
 }
 
 func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.Request, ip string) int {
-	response := req.FormValue(bc.captchaConfig.key + "-response")
+	activeConfig := bc.getActiveCaptchaConfig()
+
+	response := req.FormValue(activeConfig.key + "-response")
 	if response == "" {
 		http.Error(rw, "Bad request", http.StatusBadRequest)
 		return http.StatusBadRequest
 	}
 
-	var body = url.Values{}
-	body.Add("secret", bc.config.SecretKey)
-	body.Add("response", response)
-	resp, err := bc.httpClient.PostForm(bc.captchaConfig.validate, body)
-	if err != nil {
-		bc.log.Error("unable to validate captcha", "url", bc.captchaConfig.validate, "err", err)
-		http.Error(rw, "Internal error", http.StatusInternalServerError)
-		return http.StatusInternalServerError
-	}
-	defer resp.Body.Close()
+	var success bool
+	exp := lru.DefaultExpiration
 
-	var captchaResponse captchaResponse
-	err = json.NewDecoder(resp.Body).Decode(&captchaResponse)
-	if err != nil {
-		bc.log.Error("unable to unmarshal captcha response", "url", bc.captchaConfig.validate, "err", err)
-		http.Error(rw, "Internal error", http.StatusInternalServerError)
-		return http.StatusInternalServerError
+	// Handle proof-of-javascript verification
+	if activeConfig.validate == "internal" {
+		success = true
+		// if the circuit is open, default to one hour TTL on verification
+		if bc.circuitState == circuitOpen {
+			exp = time.Hour * 1
+		}
+	} else {
+		// Handle external captcha provider verification
+		var body = url.Values{}
+		body.Add("secret", bc.config.SecretKey)
+		body.Add("response", response)
+		resp, err := bc.httpClient.PostForm(activeConfig.validate, body)
+		if err != nil {
+			bc.log.Error("unable to validate captcha", "url", activeConfig.validate, "err", err)
+			http.Error(rw, "Internal error", http.StatusInternalServerError)
+			return http.StatusInternalServerError
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 500 {
+			bc.recordHealthCheckFailure()
+		}
+
+		var captchaResponse captchaResponse
+		err = json.NewDecoder(resp.Body).Decode(&captchaResponse)
+		if err != nil {
+			bc.log.Error("unable to unmarshal captcha response", "url", activeConfig.validate, "err", err)
+			http.Error(rw, "Internal error", http.StatusInternalServerError)
+			return http.StatusInternalServerError
+		}
+
+		success = captchaResponse.Success
 	}
-	if captchaResponse.Success {
-		bc.verifiedCache.Set(ip, true, lru.DefaultExpiration)
+
+	if success {
+		bc.verifiedCache.Set(ip, true, exp)
 
 		destination := req.FormValue("destination")
 		if destination == "" {

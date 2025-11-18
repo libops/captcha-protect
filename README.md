@@ -24,9 +24,13 @@ flowchart TD
     PROTECTED_ROUTE -- No --> Continue(Go to original destination)
     RATE_LIMIT -- Yes --> REDIRECT(Redirect to /challenge)
     RATE_LIMIT -- No --> Continue(Go to original destination)
-    REDIRECT --> CHALLENGE{turnstile/recaptcha/hcaptcha challenge}
-    CHALLENGE -- Pass --> Continue(Go to original destination)
-    CHALLENGE -- Fail --> Stuck
+    REDIRECT --> CIRCUIT{Is circuit breaker open?}
+    CIRCUIT -- Yes --> POJ_CHALLENGE{Proof-of-Javascript challenge}
+    CIRCUIT -- No --> CAPTCHA_CHALLENGE{turnstile/recaptcha/hcaptcha challenge}
+    POJ_CHALLENGE -- Pass --> Continue(Go to original destination)
+    POJ_CHALLENGE -- Fail --> Stuck
+    CAPTCHA_CHALLENGE -- Pass --> Continue(Go to original destination)
+    CAPTCHA_CHALLENGE -- Fail --> Stuck
 ```
 </details>
 
@@ -61,6 +65,8 @@ services:
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.goodBots: apple.com,archive.org,commoncrawl.org,duckduckgo.com,facebook.com,google.com,googlebot.com,googleusercontent.com,instagram.com,kagibot.org,linkedin.com,msn.com,openalex.org,twitter.com,x.com
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.persistentStateFile: /tmp/state.json
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableStateReconciliation: "false"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.periodSeconds: 30
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.failureThreshold: 3
         networks:
             default:
                 aliases:
@@ -76,7 +82,7 @@ services:
             --providers.docker=true
             --providers.docker.network=default
             --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
-            --experimental.plugins.captcha-protect.version=v1.10.1
+            --experimental.plugins.captcha-protect.version=v1.11.0
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
@@ -99,9 +105,11 @@ services:
 | `mode`                  | `string`                | `prefix`                 | Must be: `prefix`, `suffix`, `regex`. Matching does not include query parameters. `excludeRoutes` always uses `prefix` except when `mode: regex`. Only use `regex` when needed                   |
 | `protectRoutes`         | `[]string` (required)   | `""`                     | Comma-separated list of route prefixes/suffixes/regex patterns to protect.                                                                                                                       |
 | `excludeRoutes`         | `[]string`              | `""`                     | Comma-separated list of route prefixes to **never** protect. e.g., `protectRoutes: "/"` protects the entire site. `excludeRoutes: "/ajax"` would never challenge any route starting with `/ajax` |
-| `captchaProvider`       | `string` (required)     | `""`                     | The captcha type to use. Supported values: `turnstile`, `hcaptcha`, and `recaptcha`.                                                                                                             |
+| `captchaProvider`       | `string` (required)     | `""`                     | The captcha type to use. Supported values: `turnstile`, `hcaptcha`, `recaptcha`, and `poj` (proof-of-javascript).                                                                                |
 | `siteKey`               | `string` (required)     | `""`                     | The captcha site key.                                                                                                                                                                            |
 | `secretKey`             | `string` (required)     | `""`                     | The captcha secret key.                                                                                                                                                                          |
+| `periodSeconds`         | `int`                   | `0`                      | Health check interval (in seconds) for the primary captcha provider. The circuit breaker uses this to detect provider outages.                                                                   |
+| `failureThreshold`      | `int`                   | `0`                      | Number of consecutive health check failures before the circuit breaker opens and switches to proof-of-javascript fallback.                                                                       |
 | `rateLimit`             | `uint`                  | `20`                     | Maximum requests allowed from a subnet before a challenge is triggered.                                                                                                                          |
 | `window`                | `int`                   | `86400`                  | Duration (in seconds) for monitoring requests per subnet.                                                                                                                                        |
 | `ipv4subnetMask`        | `int`                   | `16`                     | CIDR subnet mask to group IPv4 addresses for rate limiting.                                                                                                                                      |
@@ -122,6 +130,24 @@ services:
 | `persistentStateFile`   | `string`                | `""`                     | File path to persist rate limiter state across Traefik restarts. In Docker, mount this file from the host.                                                                                       |
 | `enableStateReconciliation` | `string`            | `"false"`                | When `"true"`, reads and merges disk state before each save to prevent multiple instances from overwriting data. Adds extra I/O overhead. Only enable for multi-instance deployments sharing state. **Performance warning**: Not recommended for sites with >1M unique visitors due to reconciliation overhead (5-8s per cycle at scale). |
 
+### Circuit Breaker (failover if a captcha provider is unavailable)
+
+The circuit breaker provides automatic failover when the primary captcha provider (Turnstile, reCAPTCHA, or hCaptcha) becomes unavailable. When enabled, it:
+
+1. **Enables a liveness probe on the captcha provider**: Periodically sends HEAD requests to the provider's JavaScript file (every `periodSeconds`, default 30s). Also records 5xx errors during server side validation.
+2. **Detects failures**: Counts consecutive health check failures
+3. **Opens circuit**: After `failureThreshold` consecutive failures (default 3), switches to proof-of-javascript fallback
+4. **Falls back to PoJ**: Ensures user is loading javascript. Requires revalidating in 1hr
+5. **Auto-recovery**: Automatically returns to primary provider when health checks succeed
+
+**Proof-of-Javascript Fallback:**
+- Requires browsers to submit a form
+- Self-contained (no external dependencies)
+
+**Configuration:**
+- Circuit breaker is **enabled by default** with `periodSeconds: 30` and `failureThreshold: 3`
+- To disable: set both `periodSeconds: 0` and `failureThreshold: 0`
+- The `poj` provider can also be used directly as the primary provider (no circuit breaker needed)
 
 ### Good Bots
 

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1207,5 +1208,424 @@ func TestParseHttpMethodsInvalid(t *testing.T) {
 	_, err := NewCaptchaProtect(context.Background(), nil, config, "test")
 	if err != nil {
 		t.Errorf("Should not fail on invalid HTTP method: %v", err)
+	}
+}
+
+func TestCircuitBreakerEnabled(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "secret"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "turnstile"
+	config.PeriodSeconds = 30
+	config.FailureThreshold = 3
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bc, err := NewCaptchaProtect(ctx, nil, config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create CaptchaProtect: %v", err)
+	}
+
+	// Verify circuit breaker is enabled
+	if !bc.hasFallbackProvider {
+		t.Error("Expected circuit breaker to be enabled")
+	}
+
+	// Verify initial state is closed
+	if bc.circuitState != circuitClosed {
+		t.Errorf("Expected initial circuit state to be closed, got %v", bc.circuitState)
+	}
+
+	// Verify primary config is active initially
+	activeConfig := bc.getActiveCaptchaConfig()
+	if activeConfig.js != bc.captchaConfig.js {
+		t.Error("Expected primary config to be active initially")
+	}
+}
+
+func TestCircuitBreakerDisabled(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "turnstile"
+	config.PeriodSeconds = 0
+	config.FailureThreshold = 0
+
+	bc, err := NewCaptchaProtect(context.Background(), nil, config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create CaptchaProtect: %v", err)
+	}
+
+	// Verify circuit breaker is not enabled
+	if bc.hasFallbackProvider {
+		t.Error("Expected circuit breaker to be disabled")
+	}
+
+	// Should return primary config
+	activeConfig := bc.getActiveCaptchaConfig()
+	if activeConfig.js != bc.captchaConfig.js {
+		t.Error("Expected primary config to be active when circuit breaker disabled")
+	}
+}
+
+func TestHealthCheckOpensCircuit(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "secret"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "turnstile"
+	config.PeriodSeconds = 30
+	config.FailureThreshold = 3
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bc, err := NewCaptchaProtect(ctx, nil, config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create CaptchaProtect: %v", err)
+	}
+
+	// Simulate health check failures
+	for i := 0; i < config.FailureThreshold; i++ {
+		bc.recordHealthCheckFailure()
+	}
+
+	// Circuit should now be open
+	bc.mu.RLock()
+	state := bc.circuitState
+	bc.mu.RUnlock()
+
+	if state != circuitOpen {
+		t.Errorf("Expected circuit to be open after %d health check failures, got state %v", config.FailureThreshold, state)
+	}
+
+	// Should now return PoJ provider config
+	activeConfig := bc.getActiveCaptchaConfig()
+	if activeConfig.js != "/captcha-protect-poj.js" {
+		t.Errorf("Expected PoW JS path, got %s", activeConfig.js)
+	}
+	if activeConfig.key != "poj-captcha" {
+		t.Errorf("Expected pow-captcha key, got %s", activeConfig.key)
+	}
+	if activeConfig.validate != "internal" {
+		t.Errorf("Expected internal validation, got %s", activeConfig.validate)
+	}
+}
+
+func TestHealthCheckClosesCircuit(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "secret"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "turnstile"
+	config.PeriodSeconds = 30
+	config.FailureThreshold = 3
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bc, err := NewCaptchaProtect(ctx, nil, config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create CaptchaProtect: %v", err)
+	}
+
+	// Open the circuit with health check failures
+	for i := 0; i < config.FailureThreshold; i++ {
+		bc.recordHealthCheckFailure()
+	}
+
+	// Verify circuit is open
+	bc.mu.RLock()
+	if bc.circuitState != circuitOpen {
+		t.Error("Circuit should be open")
+	}
+	bc.mu.RUnlock()
+
+	// Record a health check success
+	bc.recordHealthCheckSuccess()
+
+	// Circuit should now be closed
+	bc.mu.RLock()
+	state := bc.circuitState
+	failureCount := bc.healthCheckFailureCount
+	bc.mu.RUnlock()
+
+	if state != circuitClosed {
+		t.Errorf("Expected circuit to be closed after success, got %v", state)
+	}
+
+	if failureCount != 0 {
+		t.Errorf("Expected failure count to be reset to 0, got %d", failureCount)
+	}
+
+	// Should return primary config again
+	activeConfig := bc.getActiveCaptchaConfig()
+	if activeConfig.js != bc.captchaConfig.js {
+		t.Error("Expected primary config to be active after circuit closes")
+	}
+}
+
+func TestCircuitBreakerConfiguration(t *testing.T) {
+	tests := []struct {
+		name             string
+		periodSeconds    int
+		failureThreshold int
+		expectEnabled    bool
+	}{
+		{
+			name:             "Enabled with both values",
+			periodSeconds:    30,
+			failureThreshold: 3,
+			expectEnabled:    true,
+		},
+		{
+			name:             "Disabled with zero period",
+			periodSeconds:    0,
+			failureThreshold: 3,
+			expectEnabled:    false,
+		},
+		{
+			name:             "Disabled with zero threshold",
+			periodSeconds:    30,
+			failureThreshold: 0,
+			expectEnabled:    false,
+		},
+		{
+			name:             "Disabled with both zero",
+			periodSeconds:    0,
+			failureThreshold: 0,
+			expectEnabled:    false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			config := CreateConfig()
+			config.SiteKey = "test"
+			config.SecretKey = "test"
+			config.ProtectRoutes = []string{"/"}
+			config.CaptchaProvider = "turnstile"
+			config.PeriodSeconds = tc.periodSeconds
+			config.FailureThreshold = tc.failureThreshold
+
+			bc, err := NewCaptchaProtect(ctx, nil, config, "test")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			if bc.hasFallbackProvider != tc.expectEnabled {
+				t.Errorf("Expected circuit breaker enabled=%v, got %v", tc.expectEnabled, bc.hasFallbackProvider)
+			}
+		})
+	}
+}
+
+func TestGetCaptchaConfig(t *testing.T) {
+	tests := []struct {
+		provider string
+		wantJS   string
+		wantKey  string
+	}{
+		{
+			provider: "turnstile",
+			wantJS:   "https://challenges.cloudflare.com/turnstile/v0/api.js",
+			wantKey:  "cf-turnstile",
+		},
+		{
+			provider: "recaptcha",
+			wantJS:   "https://www.google.com/recaptcha/api.js",
+			wantKey:  "g-recaptcha",
+		},
+		{
+			provider: "hcaptcha",
+			wantJS:   "https://hcaptcha.com/1/api.js",
+			wantKey:  "h-captcha",
+		},
+		{
+			provider: "poj",
+			wantJS:   "/captcha-protect-poj.js",
+			wantKey:  "poj-captcha",
+		},
+		{
+			provider: "invalid",
+			wantJS:   "",
+			wantKey:  "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.provider, func(t *testing.T) {
+			config := getCaptchaConfig(tc.provider)
+			if config.js != tc.wantJS {
+				t.Errorf("Expected JS %q, got %q", tc.wantJS, config.js)
+			}
+			if config.key != tc.wantKey {
+				t.Errorf("Expected key %q, got %q", tc.wantKey, config.key)
+			}
+		})
+	}
+}
+
+func TestServePojJS(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test-key"
+	config.SecretKey = "test-secret"
+	config.ProtectRoutes = []string{"/"}
+
+	bc, err := NewCaptchaProtect(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {}), config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create CaptchaProtect: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/captcha-protect-poj.js", nil)
+	rw := httptest.NewRecorder()
+
+	bc.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rw.Code)
+	}
+
+	contentType := rw.Header().Get("Content-Type")
+	if contentType != "application/javascript" {
+		t.Errorf("Expected Content-Type application/javascript, got %s", contentType)
+	}
+
+	body := rw.Body.String()
+	if !strings.Contains(body, "data-callback") {
+		t.Error("Expected PoJ JS to reference data-callback")
+	}
+}
+
+func TestVerifyPowChallenge(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test-key"
+	config.SecretKey = "test-secret"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "poj"
+
+	bc, err := NewCaptchaProtect(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {}), config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create CaptchaProtect: %v", err)
+	}
+
+	tests := []struct {
+		name           string
+		challenge      string
+		expectedStatus int
+	}{
+		{
+			name:           "Valid PoJ",
+			challenge:      "test-challenge",
+			expectedStatus: http.StatusFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create POST request with PoW token
+			form := url.Values{}
+			form.Add("poj-captcha-response", "foo")
+			form.Add("destination", "/")
+
+			req := httptest.NewRequest(http.MethodPost, "/challenge", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.RemoteAddr = "192.0.2.1:1234"
+
+			rw := httptest.NewRecorder()
+
+			bc.ServeHTTP(rw, req)
+
+			if rw.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, rw.Code)
+			}
+		})
+	}
+}
+
+func TestCircuitBreakerUsesPojProvider(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test-key"
+	config.SecretKey = "test-secret"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "turnstile"
+	config.PeriodSeconds = 30
+	config.FailureThreshold = 3
+
+	bc, err := NewCaptchaProtect(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {}), config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create CaptchaProtect: %v", err)
+	}
+
+	// Initially should use primary provider
+	activeConfig := bc.getActiveCaptchaConfig()
+	if activeConfig.js != "https://challenges.cloudflare.com/turnstile/v0/api.js" {
+		t.Errorf("Expected primary provider (turnstile), got %s", activeConfig.js)
+	}
+
+	// Simulate health check failures to open circuit
+	for i := 0; i < config.FailureThreshold; i++ {
+		bc.recordHealthCheckFailure()
+	}
+
+	// Now should use PoJ provider
+	activeConfig = bc.getActiveCaptchaConfig()
+	if activeConfig.js != "/captcha-protect-poj.js" {
+		t.Errorf("Expected PoJ provider when circuit is open, got %s", activeConfig.js)
+	}
+	if activeConfig.key != "poj-captcha" {
+		t.Errorf("Expected poj-captcha key when circuit is open, got %s", activeConfig.key)
+	}
+	if activeConfig.validate != "internal" {
+		t.Errorf("Expected internal validation when circuit is open, got %s", activeConfig.validate)
+	}
+
+	// Health check success should close circuit
+	bc.recordHealthCheckSuccess()
+
+	// Should return to primary provider
+	activeConfig = bc.getActiveCaptchaConfig()
+	if activeConfig.js != "https://challenges.cloudflare.com/turnstile/v0/api.js" {
+		t.Errorf("Expected primary provider after circuit closes, got %s", activeConfig.js)
+	}
+}
+
+func TestPojChallengeGeneration(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test-key"
+	config.SecretKey = "test-secret"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "poj"
+	config.PeriodSeconds = 0 // Disable circuit breaker
+	config.FailureThreshold = 0
+
+	bc, err := NewCaptchaProtect(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	}), config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create CaptchaProtect: %v", err)
+	}
+
+	// Request the challenge page directly with PoW provider
+	req := httptest.NewRequest(http.MethodGet, "/challenge?destination=%2F", nil)
+	req.RemoteAddr = "203.0.113.1:1234"
+
+	rw := httptest.NewRecorder()
+	bc.ServeHTTP(rw, req)
+
+	body := rw.Body.String()
+
+	// Check that challenge and difficulty are included in the response
+	if !strings.Contains(body, "data-callback=") {
+		t.Errorf("Expected data-callback attribute in PoW challenge page")
+	}
+	if !strings.Contains(body, "/captcha-protect-poj.js") {
+		t.Errorf("Expected PoJ JS URL in challenge page")
 	}
 }
