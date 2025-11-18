@@ -603,6 +603,10 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 		}
 		defer resp.Body.Close()
 
+		if resp.StatusCode < 200 || resp.StatusCode >= 500 {
+			bc.recordHealthCheckFailure()
+		}
+
 		var captchaResponse captchaResponse
 		err = json.NewDecoder(resp.Body).Decode(&captchaResponse)
 		if err != nil {

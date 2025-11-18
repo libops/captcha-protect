@@ -103,11 +103,11 @@ services:
 | `mode`                  | `string`                | `prefix`                 | Must be: `prefix`, `suffix`, `regex`. Matching does not include query parameters. `excludeRoutes` always uses `prefix` except when `mode: regex`. Only use `regex` when needed                   |
 | `protectRoutes`         | `[]string` (required)   | `""`                     | Comma-separated list of route prefixes/suffixes/regex patterns to protect.                                                                                                                       |
 | `excludeRoutes`         | `[]string`              | `""`                     | Comma-separated list of route prefixes to **never** protect. e.g., `protectRoutes: "/"` protects the entire site. `excludeRoutes: "/ajax"` would never challenge any route starting with `/ajax` |
-| `captchaProvider`       | `string` (required)     | `""`                     | The captcha type to use. Supported values: `turnstile`, `hcaptcha`, `recaptcha`, and `poj` (proof-of-work).                                                                                      |
+| `captchaProvider`       | `string` (required)     | `""`                     | The captcha type to use. Supported values: `turnstile`, `hcaptcha`, `recaptcha`, and `poj` (proof-of-javascript).                                                                                |
 | `siteKey`               | `string` (required)     | `""`                     | The captcha site key.                                                                                                                                                                            |
 | `secretKey`             | `string` (required)     | `""`                     | The captcha secret key.                                                                                                                                                                          |
-| `periodSeconds`         | `int`                   | `30`                     | Health check interval (in seconds) for the primary captcha provider. The circuit breaker uses this to detect provider outages.                                                                    |
-| `failureThreshold`      | `int`                   | `3`                      | Number of consecutive health check failures before the circuit breaker opens and switches to proof-of-work fallback.                                                                              |
+| `periodSeconds`         | `int`                   | `30`                     | Health check interval (in seconds) for the primary captcha provider. The circuit breaker uses this to detect provider outages.                                                                   |
+| `failureThreshold`      | `int`                   | `3`                      | Number of consecutive health check failures before the circuit breaker opens and switches to proof-of-javascript fallback.                                                                       |
 | `rateLimit`             | `uint`                  | `20`                     | Maximum requests allowed from a subnet before a challenge is triggered.                                                                                                                          |
 | `window`                | `int`                   | `86400`                  | Duration (in seconds) for monitoring requests per subnet.                                                                                                                                        |
 | `ipv4subnetMask`        | `int`                   | `16`                     | CIDR subnet mask to group IPv4 addresses for rate limiting.                                                                                                                                      |
@@ -132,10 +132,10 @@ services:
 
 The circuit breaker provides automatic failover when the primary captcha provider (Turnstile, reCAPTCHA, or hCaptcha) becomes unavailable. When enabled, it:
 
-1. **Monitors provider health**: Periodically sends HEAD requests to the provider's JavaScript file (every `periodSeconds`, default 30s)
+1. **Monitors provider health**: Periodically sends HEAD requests to the provider's JavaScript file (every `periodSeconds`, default 30s). Also records 5xx errors on server side validation.
 2. **Detects failures**: Counts consecutive health check failures
-3. **Opens circuit**: After `failureThreshold` consecutive failures (default 3), switches to proof-of-work fallback
-4. **Falls back to PoJ**: Ensures user is loading javascript
+3. **Opens circuit**: After `failureThreshold` consecutive failures (default 3), switches to proof-of-javascript fallback
+4. **Falls back to PoJ**: Ensures user is loading javascript. Requires revalidating in 1hr
 5. **Auto-recovery**: Automatically returns to primary provider when health checks succeed
 
 **Proof-of-Javascript Fallback:**
