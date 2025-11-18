@@ -82,7 +82,7 @@ services:
             --providers.docker=true
             --providers.docker.network=default
             --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
-            --experimental.plugins.captcha-protect.version=v1.11.0
+            --experimental.plugins.captcha-protect.version=v1.11.1
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
@@ -136,7 +136,7 @@ The circuit breaker provides automatic failover when the primary captcha provide
 
 1. **Enables a liveness probe on the captcha provider**: Periodically sends HEAD requests to the provider's JavaScript file (every `periodSeconds`, default 30s). Also records 5xx errors during server side validation.
 2. **Detects failures**: Counts consecutive health check failures
-3. **Opens circuit**: After `failureThreshold` consecutive failures (default 3), switches to proof-of-javascript fallback
+3. **Opens circuit**: After `failureThreshold` consecutive failures, switches to proof-of-javascript fallback
 4. **Falls back to PoJ**: Ensures user is loading javascript. Requires revalidating in 1hr
 5. **Auto-recovery**: Automatically returns to primary provider when health checks succeed
 

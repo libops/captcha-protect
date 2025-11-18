@@ -426,7 +426,7 @@ func (bc *CaptchaProtect) performHealthCheck() {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+	if resp.StatusCode != http.StatusNotFound && resp.StatusCode >= 200 && resp.StatusCode < 500 {
 		bc.recordHealthCheckSuccess()
 		return
 	}
