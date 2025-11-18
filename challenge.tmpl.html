@@ -16,14 +16,37 @@
             data-language="auto"
             data-retry="auto"
             interval="8000"
-            data-appearance="always">
-        </div>
+            data-appearance="always"
+            {{- if .Challenge }}
+            data-challenge="{{ .Challenge }}"
+            {{- end }}
+            {{- if .Difficulty }}
+            data-difficulty="{{ .Difficulty }}"
+            {{- end }}
+        ></div>
         <input type="hidden" name="destination" value="{{ .Destination }}">
     </form>
     <script type="text/javascript">
         function captchaCallback(token) {
+            var form = document.getElementById("captcha-form");
+            var captchaDiv = document.querySelector('[data-callback]');
+            var frontendKey = captchaDiv.className;
+
+            // Create hidden input for the token if it doesn't exist
+            var inputName = frontendKey + "-response";
+            var existingInput = form.querySelector('input[name="' + inputName + '"]');
+            if (!existingInput) {
+                var input = document.createElement("input");
+                input.type = "hidden";
+                input.name = inputName;
+                input.value = token;
+                form.appendChild(input);
+            } else {
+                existingInput.value = token;
+            }
+
             setTimeout(function() {
-                document.getElementById("captcha-form").submit();
+                form.submit();
             }, 1000);
         }
     </script>
