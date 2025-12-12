@@ -27,6 +27,13 @@ const numIPs = 100
 const parallelism = 10
 
 func main() {
+	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	googleCIDRs, err := helper.FetchGooglebotIPs(log, http.DefaultClient, "https://developers.google.com/static/search/apis/ipranges/googlebot.json")
+	if err != nil {
+		slog.Error("unable to fetch google bot ips", "err", err)
+		os.Exit(1)
+	}
+
 	_ips := []string{
 		"127.0.0.0/8",
 		"10.0.0.0/8",
@@ -34,6 +41,7 @@ func main() {
 		"192.168.0.0/16",
 		"fc00::/8",
 	}
+	_ips = append(_ips, googleCIDRs...)
 	for _, ip := range _ips {
 		parsedIp := parseCIDR(ip)
 		exemptIps = append(exemptIps, parsedIp)
@@ -62,6 +70,7 @@ func main() {
 	time.Sleep(cp.StateSaveInterval + cp.StateSaveJitter + (1 * time.Second))
 
 	testStateSharing(ips)
+	testGoogleBotGetsThrough(googleCIDRs)
 
 	runCommand("docker", "container", "stats", "--no-stream")
 
@@ -241,6 +250,10 @@ func httpRequest(ip, url string) string {
 
 // runCommand runs a shell command.
 func runCommand(name string, args ...string) {
+	runCommandWithEnv(nil, name, args...)
+}
+
+func runCommandWithEnv(env map[string]string, name string, args ...string) {
 	cmd := exec.Command(name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -250,6 +263,9 @@ func runCommand(name string, args ...string) {
 	tt := os.Getenv("TRAEFIK_TAG")
 	if tt != "" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("TRAEFIK_TAG=%s", tt))
+	}
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
 	if err := cmd.Run(); err != nil {
 		slog.Error("Command failed", "err", err)
@@ -303,4 +319,105 @@ func parseCIDR(cidr string) *net.IPNet {
 		slog.Error("Failed to parse CIDR", "cidr", cidr, "err", err)
 	}
 	return block
+}
+
+func getIPFromCIDR(cidr string) (string, error) {
+	ip, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "", err
+	}
+
+	// For IPv4, increment the IP to get a usable host address
+	if ip.To4() != nil {
+		// Clone the IP to avoid modifying the original
+		newIP := make(net.IP, len(ip))
+		copy(newIP, ip)
+
+		for i := len(newIP) - 1; i >= 0; i-- {
+			newIP[i]++
+			if newIP[i] > 0 {
+				break
+			}
+		}
+
+		// If the new IP is the broadcast address, we can't use it.
+		// This is a simplistic check, and might not cover all cases for small subnets.
+		// A more robust solution might be needed for very small CIDR ranges.
+		if !ipnet.Contains(newIP) {
+			// This can happen for /31 or /32. For now, we just return the network address.
+			return ip.String(), nil
+		}
+		// make sure we don't have a broadcast address
+		last_ip := make(net.IP, len(ipnet.IP))
+		copy(last_ip, ipnet.IP)
+		for i := 0; i < len(ipnet.Mask); i++ {
+			last_ip[i] |= ^ipnet.Mask[i]
+		}
+		if newIP.Equal(last_ip) {
+			return ip.String(), nil
+		}
+
+		return newIP.String(), nil
+	}
+
+	// For IPv6, we can usually just use the network address.
+	return ip.String(), nil
+}
+
+func testGoogleBotGetsThrough(googleCIDRs []string) {
+	fmt.Println("\nTesting GoogleBot exemption...")
+
+	if len(googleCIDRs) == 0 {
+		slog.Warn("No Google CIDRs found, skipping test")
+		return
+	}
+
+	// Pick a Google IP
+	googleIP, err := getIPFromCIDR(googleCIDRs[len(googleCIDRs)-1])
+	if err != nil {
+		slog.Error("Failed to get an IP from google CIDR", "err", err)
+		os.Exit(1)
+	}
+
+	var output string // Declare output once here
+
+	fmt.Printf("Checking GoogleBot IP %s without params - should always pass (making %d requests)\n", googleIP, rateLimit+1)
+	for i := 0; i < rateLimit+1; i++ {
+		output = httpRequest(googleIP, "http://localhost") // Assign value to the already declared 'output'
+		if output != "" {
+			slog.Error(fmt.Sprintf("GoogleBot with no params was challenged on request #%d", i+1), "ip", googleIP, "output", output)
+			os.Exit(1)
+		}
+	}
+	fmt.Printf("✓ GoogleBot with no params passed %d requests successfully\n", rateLimit+1)
+
+	// now restart with PROTECT_PARAMETERS=true and test again with params
+	fmt.Println("\nRestarting traefik with PROTECT_PARAMETERS=true")
+	runCommand("docker", "compose", "down")
+	runCommandWithEnv(map[string]string{"PROTECT_PARAMETERS": "true"}, "docker", "compose", "up", "-d")
+	waitForService("http://localhost")
+	waitForService("http://localhost/app2")
+
+	// Prime the rate limiter for the GoogleBot IP with parameters
+	fmt.Printf("Priming rate limiter for GoogleBot IP %s with params (%d requests)\n", googleIP, rateLimit)
+	for i := 0; i < rateLimit; i++ {
+		output = httpRequest(googleIP, "http://localhost/?foo=bar") // Assign value
+		if output != "" {
+			slog.Error(fmt.Sprintf("GoogleBot with params was challenged prematurely on request #%d", i+1), "ip", googleIP, "output", output)
+			os.Exit(1)
+		}
+	}
+	fmt.Printf("✓ Rate limiter primed for GoogleBot IP %s\n", googleIP)
+
+	fmt.Printf("Checking GoogleBot IP %s with params (request #%d) - should be challenged\n", googleIP, rateLimit+1)
+	output = httpRequest(googleIP, "http://localhost/?foo=bar") // Assign value
+	expectedURL := "http://localhost/challenge?destination=%2F%3Ffoo%3Dbar"
+	if output != expectedURL {
+		slog.Error("GoogleBot with params was not challenged", "ip", googleIP, "output", output, "expected", expectedURL)
+		os.Exit(1)
+	}
+	fmt.Println("✓ GoogleBot with params was challenged")
+
+	// set things back to normal for other tests
+	runCommand("docker", "compose", "down")
 }

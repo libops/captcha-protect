@@ -75,6 +75,7 @@ type Config struct {
 	// Only enable this if running multiple plugin instances sharing the same state file.
 	// Performance warning: Not recommended for sites with >1M unique visitors (see internal/state/state_stress_test.go).
 	EnableStateReconciliation string `json:"enableStateReconciliation"`
+	EnableGooglebotIPCheck    string `json:"enableGooglebotIPCheck"`
 	Mode                      string `json:"mode"`
 	PeriodSeconds             int    `json:"periodSeconds"`
 	FailureThreshold          int    `json:"failureThreshold"`
@@ -89,6 +90,7 @@ type CaptchaProtect struct {
 	rateCache          *lru.Cache
 	verifiedCache      *lru.Cache
 	botCache           *lru.Cache
+	googlebotIPs       *helper.GooglebotIPs
 	captchaConfig      CaptchaConfig
 	exemptIps          []*net.IPNet
 	tmpl               *template.Template
@@ -138,6 +140,7 @@ func CreateConfig() *Config {
 		CaptchaProvider:           "turnstile",
 		Mode:                      "prefix",
 		EnableStateReconciliation: "false",
+		EnableGooglebotIPCheck:    "false",
 		PeriodSeconds:             DefaultHealthCheckPeriodSeconds,
 		FailureThreshold:          DefaultHealthCheckFailureThreshold,
 	}
@@ -328,8 +331,48 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 			cancel()
 		}()
 	}
+	if config.EnableGooglebotIPCheck == "true" {
+		log.Info("Googlebot IP check enabled")
+		bc.googlebotIPs = helper.NewGooglebotIPs()
+		childCtx, cancel := context.WithCancel(ctx)
+		go bc.googlebotIPCheckLoop(childCtx)
+		go func() {
+			<-ctx.Done()
+			log.Debug("Context canceled, stopping Googlebot IP check loop")
+			cancel()
+		}()
+	}
 
 	return &bc, nil
+}
+
+func (bc *CaptchaProtect) googlebotIPCheckLoop(ctx context.Context) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	// Initial fetch
+	cidrs, err := helper.FetchGooglebotIPs(bc.log, bc.httpClient, "https://developers.google.com/static/search/apis/ipranges/googlebot.json")
+	if err != nil {
+		bc.log.Error("failed to fetch googlebot ips", "err", err)
+	} else {
+		bc.googlebotIPs.Update(cidrs, bc.log)
+		bc.log.Info("Updated Googlebot IPs", "count", len(cidrs))
+	}
+
+	for {
+		select {
+		case <-ticker.C:
+			cidrs, err := helper.FetchGooglebotIPs(bc.log, bc.httpClient, "https://developers.google.com/static/search/apis/ipranges/googlebot.json")
+			if err != nil {
+				bc.log.Error("failed to fetch googlebot ips", "err", err)
+				continue
+			}
+			bc.googlebotIPs.Update(cidrs, bc.log)
+			bc.log.Info("Updated Googlebot IPs", "count", len(cidrs))
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // getCaptchaConfig returns the captcha configuration for a given provider.
@@ -903,8 +946,17 @@ func (bc *CaptchaProtect) isGoodBot(req *http.Request, clientIP string) bool {
 	if ok {
 		return bot.(bool)
 	}
+	v := false
+	if bc.config.EnableGooglebotIPCheck == "true" {
+		slog.Debug("Checking if a google IP")
+		ip := net.ParseIP(clientIP)
+		if ip != nil {
+			v = bc.googlebotIPs.Contains(ip)
+		}
+	} else {
+		v = helper.IsIpGoodBot(clientIP, bc.config.GoodBots)
+	}
 
-	v := helper.IsIpGoodBot(clientIP, bc.config.GoodBots)
 	bc.botCache.Set(clientIP, v, lru.DefaultExpiration)
 	return v
 }

@@ -747,7 +747,7 @@ func TestIsGoodBotWithParameters(t *testing.T) {
 	config.SecretKey = "test"
 	config.ProtectRoutes = []string{"/"}
 	config.ProtectParameters = "true"
-	config.GoodBots = []string{"googlebot.com"}
+	config.GoodBots = []string{"bing.com"}
 
 	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
 
