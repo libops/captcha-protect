@@ -38,9 +38,16 @@ flowchart TD
 
 ### Example
 
-Below is an example `docker-compose.yml` with traefik as the frontend, and nginx as the backend. nginx is using this middleware to protect routes on the site that start with `/` (`protectRoutes: "/"`)
+Below is an example `docker-compose.yml` with traefik as the frontend, and nginx as the backend. nginx is adding the captcha-protect plugin as middleware to protect routes on the site that start with `/` (`protectRoutes: "/"`)
 
-Since the config values aren't specified, captcha-protect would use the default `rateLimit: 20` and `window: 86400` so any IPv4 in `X.Y.0.0/16` (or ipv6 in `/64`) could only access the site 20 times before individual IPs in that subnet are required to pass a captcha to continue browsing.
+Since these config values are specified:
+
+```
+rateLimit: 0
+window: 864000
+```
+
+Any individual IP would immediately be challenged. Once the client at that IP passes a challenge they won't be challenged again for 10 days (86400**0**). This is the recommended default given the wide network range of some abusive crawlers.
 
 ```yaml
 networks:
