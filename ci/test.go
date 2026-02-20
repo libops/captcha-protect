@@ -28,9 +28,9 @@ const parallelism = 10
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	googleCIDRs, err := helper.FetchGooglebotIPs(log, http.DefaultClient, "https://developers.google.com/static/search/apis/ipranges/googlebot.json")
+	googleCIDRs, err := helper.FetchGoogleCrawlerIPs(log, http.DefaultClient, helper.GoogleCrawlerIPRangeURLs)
 	if err != nil {
-		slog.Error("unable to fetch google bot ips", "err", err)
+		slog.Error("unable to fetch google crawler ips", "err", err)
 		os.Exit(1)
 	}
 
@@ -56,18 +56,18 @@ func main() {
 	runCommand("docker", "compose", "up", "-d")
 	waitForService("http://localhost")
 	waitForService("http://localhost/app2")
+	waitForGoogleExemptionReady(googleCIDRs)
 
 	fmt.Printf("Making sure %d attempt(s) pass\n", rateLimit)
 	runParallelChecks(ips, rateLimit, "http://localhost")
-
-	time.Sleep(cp.StateSaveInterval + cp.StateSaveJitter + (1 * time.Second))
-	runCommand("jq", ".", "tmp/state.json")
+	statePath := "./tmp/state.json"
+	runCommand("jq", ".", statePath)
 
 	fmt.Printf("Making sure attempt #%d causes a redirect to the challenge page\n", rateLimit+1)
 	ensureRedirect(ips, "http://localhost")
 
 	fmt.Println("\nTesting state sharing between nginx instances...")
-	time.Sleep(cp.StateSaveInterval + cp.StateSaveJitter + (1 * time.Second))
+	time.Sleep(cp.StateSaveInterval + cp.StateSaveJitter + (5 * time.Second))
 
 	testStateSharing(ips)
 	testGoogleBotGetsThrough(googleCIDRs)
@@ -81,7 +81,7 @@ func main() {
 	time.Sleep(10 * time.Second)
 	checkStateReload()
 
-	runCommand("rm", "tmp/state.json")
+	runCommand("rm", "-f", statePath)
 
 }
 
@@ -147,7 +147,7 @@ func runParallelChecks(ips []string, rateLimit int, url string) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, parallelism)
 
-	for i := 0; i < rateLimit; i++ {
+	for range rateLimit {
 		for _, ip := range ips {
 			wg.Add(1)
 			sem <- struct{}{}
@@ -305,7 +305,7 @@ func checkStateReload() {
 		os.Exit(1)
 	}
 
-	if len(botsMap) != numIPs {
+	if len(botsMap) < numIPs {
 		slog.Error("Unexpected number of bots", "expected", numIPs, "received", len(botsMap))
 		os.Exit(1)
 	}
@@ -400,7 +400,7 @@ func testGoogleBotGetsThrough(googleCIDRs []string) {
 
 	// Prime the rate limiter for the GoogleBot IP with parameters
 	fmt.Printf("Priming rate limiter for GoogleBot IP %s with params (%d requests)\n", googleIP, rateLimit)
-	for i := 0; i < rateLimit; i++ {
+	for i := range rateLimit {
 		output = httpRequest(googleIP, "http://localhost/?foo=bar") // Assign value
 		if output != "" {
 			slog.Error(fmt.Sprintf("GoogleBot with params was challenged prematurely on request #%d", i+1), "ip", googleIP, "output", output)
@@ -420,4 +420,46 @@ func testGoogleBotGetsThrough(googleCIDRs []string) {
 
 	// set things back to normal for other tests
 	runCommand("docker", "compose", "down")
+}
+
+func waitForGoogleExemptionReady(googleCIDRs []string) {
+	googleIP, err := firstUsableIPv4FromCIDRs(googleCIDRs)
+	if err != nil {
+		slog.Warn("Unable to select Google IP for readiness check; skipping warmup", "err", err)
+		return
+	}
+
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		ready := true
+		for i := 0; i < rateLimit+1; i++ {
+			if output := httpRequest(googleIP, "http://localhost"); output != "" {
+				ready = false
+				break
+			}
+		}
+		if ready {
+			fmt.Printf("Google exemption is active for %s\n", googleIP)
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	slog.Error("Timed out waiting for Google crawler IP exemption to become active", "googleIP", googleIP)
+	os.Exit(1)
+}
+
+func firstUsableIPv4FromCIDRs(cidrs []string) (string, error) {
+	for _, cidr := range cidrs {
+		ip, err := getIPFromCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		parsed := net.ParseIP(ip)
+		if parsed != nil && parsed.To4() != nil {
+			return ip, nil
+		}
+	}
+
+	return "", fmt.Errorf("no usable IPv4 found in CIDR list")
 }

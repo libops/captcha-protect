@@ -58,9 +58,6 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        traefik: [latest]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -68,7 +65,7 @@ jobs:
         run: go run test.go
         working-directory: ./ci
         env:
-          TRAEFIK_TAG: ${{ matrix.traefik }}
+          TRAEFIK_TAG: latest
 
       - name: cleanup
         if: ${{ always() }}

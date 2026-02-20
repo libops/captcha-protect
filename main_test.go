@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/libops/captcha-protect/internal/helper"
 )
 
 func TestParseIp(t *testing.T) {
@@ -1627,5 +1629,223 @@ func TestPojChallengeGeneration(t *testing.T) {
 	}
 	if !strings.Contains(body, "/captcha-protect-poj.js") {
 		t.Errorf("Expected PoJ JS URL in challenge page")
+	}
+}
+
+func TestPerformHealthCheckSuccessResetsFailures(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "turnstile"
+	config.PeriodSeconds = 3600
+	config.FailureThreshold = 2
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bc, err := NewCaptchaProtect(ctx, nil, config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create CaptchaProtect: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	bc.captchaConfig.js = server.URL
+	bc.recordHealthCheckFailure()
+
+	bc.performHealthCheck()
+
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	if bc.healthCheckFailureCount != 0 {
+		t.Fatalf("expected failure count reset to 0, got %d", bc.healthCheckFailureCount)
+	}
+	if bc.circuitState != circuitClosed {
+		t.Fatalf("expected circuit to be closed, got %v", bc.circuitState)
+	}
+}
+
+func TestPerformHealthCheckFailurePaths(t *testing.T) {
+	tests := []struct {
+		name      string
+		jsURL     string
+		status    int
+		expectErr bool
+	}{
+		{
+			name:   "404 considered failure",
+			status: http.StatusNotFound,
+		},
+		{
+			name:   "503 considered failure",
+			status: http.StatusServiceUnavailable,
+		},
+		{
+			name:      "invalid URL request creation failure",
+			jsURL:     "://invalid-url",
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := CreateConfig()
+			config.SiteKey = "test"
+			config.SecretKey = "test"
+			config.ProtectRoutes = []string{"/"}
+			config.CaptchaProvider = "turnstile"
+			config.PeriodSeconds = 3600
+			config.FailureThreshold = 1
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			bc, err := NewCaptchaProtect(ctx, nil, config, "test")
+			if err != nil {
+				t.Fatalf("Failed to create CaptchaProtect: %v", err)
+			}
+
+			if tt.expectErr {
+				bc.captchaConfig.js = tt.jsURL
+			} else {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(tt.status)
+				}))
+				defer server.Close()
+				bc.captchaConfig.js = server.URL
+			}
+
+			bc.performHealthCheck()
+
+			bc.mu.RLock()
+			defer bc.mu.RUnlock()
+			if bc.healthCheckFailureCount != 1 {
+				t.Fatalf("expected failure count 1, got %d", bc.healthCheckFailureCount)
+			}
+			if bc.circuitState != circuitOpen {
+				t.Fatalf("expected circuit to open, got %v", bc.circuitState)
+			}
+		})
+	}
+}
+
+func TestVerifyChallengePagePojFallbackUsesOneHourTTL(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test-key"
+	config.SecretKey = "test-secret"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "turnstile"
+	config.PeriodSeconds = 3600
+	config.FailureThreshold = 1
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bc, err := NewCaptchaProtect(ctx, nil, config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create CaptchaProtect: %v", err)
+	}
+
+	// Open the circuit so PoJ becomes active fallback provider.
+	bc.recordHealthCheckFailure()
+
+	form := url.Values{}
+	form.Add("poj-captcha-response", "ok")
+	form.Add("destination", "%2F")
+	req := httptest.NewRequest(http.MethodPost, "/challenge", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	clientIP := "203.0.113.10"
+
+	status := bc.verifyChallengePage(rr, req, clientIP)
+	if status != http.StatusFound {
+		t.Fatalf("expected status %d, got %d", http.StatusFound, status)
+	}
+
+	item, found := bc.verifiedCache.Items()[clientIP]
+	if !found {
+		t.Fatalf("expected %s to be in verified cache", clientIP)
+	}
+
+	remaining := time.Until(time.Unix(0, item.Expiration))
+	if remaining < 50*time.Minute || remaining > 70*time.Minute {
+		t.Fatalf("expected PoJ fallback TTL around 1h, got %s", remaining)
+	}
+}
+
+func TestGooglebotIPCheckLoopInitialFetchSuccess(t *testing.T) {
+	originalURLs := helper.GoogleCrawlerIPRangeURLs
+	defer func() { helper.GoogleCrawlerIPRangeURLs = originalURLs }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"prefixes":[{"ipv4Prefix":"203.0.113.0/24"}]}`))
+	}))
+	defer server.Close()
+
+	helper.GoogleCrawlerIPRangeURLs = []string{server.URL}
+
+	bc := &CaptchaProtect{
+		log:          slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		httpClient:   server.Client(),
+		googlebotIPs: helper.NewGooglebotIPs(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		bc.googlebotIPCheckLoop(ctx)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if bc.googlebotIPs.Contains(net.ParseIP("203.0.113.10")) {
+			cancel()
+			<-done
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	cancel()
+	<-done
+	t.Fatal("expected googlebot IPs to be updated from initial crawler fetch")
+}
+
+func TestGooglebotIPCheckLoopInitialFetchError(t *testing.T) {
+	originalURLs := helper.GoogleCrawlerIPRangeURLs
+	defer func() { helper.GoogleCrawlerIPRangeURLs = originalURLs }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	helper.GoogleCrawlerIPRangeURLs = []string{server.URL}
+
+	bc := &CaptchaProtect{
+		log:          slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		httpClient:   server.Client(),
+		googlebotIPs: helper.NewGooglebotIPs(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		bc.googlebotIPCheckLoop(ctx)
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	if bc.googlebotIPs.Contains(net.ParseIP("203.0.113.10")) {
+		t.Fatal("did not expect googlebot IPs to update when initial fetch fails")
 	}
 }
