@@ -124,3 +124,71 @@ func TestFetchGoogleCrawlerIPs(t *testing.T) {
 		t.Fatalf("unexpected CIDRs: got %v want %v", got, want)
 	}
 }
+
+func TestFetchGoogleCrawlerIPsError(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	okServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"prefixes":[{"ipv4Prefix":"8.8.8.0/24"}]}`))
+	}))
+	defer okServer.Close()
+
+	errServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer errServer.Close()
+
+	_, err := FetchGoogleCrawlerIPs(log, okServer.Client(), []string{okServer.URL, errServer.URL})
+	if err == nil {
+		t.Fatal("expected error when one endpoint returns non-200")
+	}
+}
+
+func TestRefreshGoogleCrawlerIPs(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	g := NewGooglebotIPs()
+
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"prefixes":[{"ipv4Prefix":"203.0.113.0/24"}]}`))
+	}))
+	defer serverA.Close()
+
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"prefixes":[{"ipv4Prefix":"203.0.113.0/25"},{"ipv6Prefix":"2001:db8::/32"}]}`))
+	}))
+	defer serverB.Close()
+
+	count, err := RefreshGoogleCrawlerIPs(log, serverA.Client(), g, []string{serverA.URL, serverB.URL})
+	if err != nil {
+		t.Fatalf("RefreshGoogleCrawlerIPs failed: %v", err)
+	}
+
+	if count != 2 {
+		t.Fatalf("expected reduced count 2, got %d", count)
+	}
+
+	if !g.Contains(net.ParseIP("203.0.113.9")) {
+		t.Fatal("expected refreshed set to contain 203.0.113.9")
+	}
+	if !g.Contains(net.ParseIP("2001:db8::1")) {
+		t.Fatal("expected refreshed set to contain 2001:db8::1")
+	}
+}
+
+func TestRefreshGoogleCrawlerIPsError(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	g := NewGooglebotIPs()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	_, err := RefreshGoogleCrawlerIPs(log, server.Client(), g, []string{server.URL})
+	if err == nil {
+		t.Fatal("expected refresh error")
+	}
+}

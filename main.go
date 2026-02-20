@@ -351,24 +351,22 @@ func (bc *CaptchaProtect) googlebotIPCheckLoop(ctx context.Context) {
 	defer ticker.Stop()
 
 	// Initial fetch
-	cidrs, err := helper.FetchGoogleCrawlerIPs(bc.log, bc.httpClient, helper.GoogleCrawlerIPRangeURLs)
+	count, err := helper.RefreshGoogleCrawlerIPs(bc.log, bc.httpClient, bc.googlebotIPs, helper.GoogleCrawlerIPRangeURLs)
 	if err != nil {
 		bc.log.Error("failed to fetch googlebot ips", "err", err)
 	} else {
-		bc.googlebotIPs.Update(cidrs, bc.log)
-		bc.log.Info("Updated Googlebot IPs", "count", len(cidrs))
+		bc.log.Info("Updated Googlebot IPs", "count", count)
 	}
 
 	for {
 		select {
 		case <-ticker.C:
-			cidrs, err := helper.FetchGoogleCrawlerIPs(bc.log, bc.httpClient, helper.GoogleCrawlerIPRangeURLs)
+			count, err := helper.RefreshGoogleCrawlerIPs(bc.log, bc.httpClient, bc.googlebotIPs, helper.GoogleCrawlerIPRangeURLs)
 			if err != nil {
 				bc.log.Error("failed to fetch googlebot ips", "err", err)
 				continue
 			}
-			bc.googlebotIPs.Update(cidrs, bc.log)
-			bc.log.Info("Updated Googlebot IPs", "count", len(cidrs))
+			bc.log.Info("Updated Googlebot IPs", "count", count)
 		case <-ctx.Done():
 			return
 		}

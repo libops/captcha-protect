@@ -137,6 +137,19 @@ func FetchGoogleCrawlerIPs(log *slog.Logger, httpClient *http.Client, urls []str
 	return ReduceCIDRs(allCIDRs, log), nil
 }
 
+// RefreshGoogleCrawlerIPs fetches crawler IPs from all configured URLs and updates
+// the provided GooglebotIPs set. Returns the number of CIDRs loaded.
+func RefreshGoogleCrawlerIPs(log *slog.Logger, httpClient *http.Client, target *GooglebotIPs, urls []string) (int, error) {
+	cidrs, err := FetchGoogleCrawlerIPs(log, httpClient, urls)
+	if err != nil {
+		return 0, err
+	}
+
+	target.Update(cidrs, log)
+
+	return len(cidrs), nil
+}
+
 // ReduceCIDRs canonicalizes CIDRs, removes exact duplicates, and removes narrower
 // ranges when they are fully covered by broader ranges.
 func ReduceCIDRs(cidrs []string, log *slog.Logger) []string {
