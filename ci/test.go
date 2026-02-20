@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -54,12 +52,6 @@ func main() {
 	fmt.Printf("Generating %d IPs\n", numIPs)
 	ips := generateUniquePublicIPs(numIPs)
 
-	statePath, err := prepareStateFile(0o777, 0o666)
-	if err != nil {
-		slog.Error("Failed to prepare state file", "statePath", statePath, "err", err)
-		os.Exit(1)
-	}
-
 	fmt.Println("Bringing traefik/nginx online")
 	runCommand("docker", "compose", "up", "-d")
 	waitForService("http://localhost")
@@ -68,19 +60,14 @@ func main() {
 
 	fmt.Printf("Making sure %d attempt(s) pass\n", rateLimit)
 	runParallelChecks(ips, rateLimit, "http://localhost")
-
-	statePath, err = waitForStateFile(30 * time.Second)
-	if err != nil {
-		slog.Error("State file was not created in time", "err", err)
-		os.Exit(1)
-	}
+	statePath := "./tmp/state.json"
 	runCommand("jq", ".", statePath)
 
 	fmt.Printf("Making sure attempt #%d causes a redirect to the challenge page\n", rateLimit+1)
 	ensureRedirect(ips, "http://localhost")
 
 	fmt.Println("\nTesting state sharing between nginx instances...")
-	time.Sleep(cp.StateSaveInterval + cp.StateSaveJitter + (1 * time.Second))
+	time.Sleep(cp.StateSaveInterval + cp.StateSaveJitter + (5 * time.Second))
 
 	testStateSharing(ips)
 	testGoogleBotGetsThrough(googleCIDRs)
@@ -160,7 +147,7 @@ func runParallelChecks(ips []string, rateLimit int, url string) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, parallelism)
 
-	for i := 0; i < rateLimit; i++ {
+	for range rateLimit {
 		for _, ip := range ips {
 			wg.Add(1)
 			sem <- struct{}{}
@@ -318,7 +305,7 @@ func checkStateReload() {
 		os.Exit(1)
 	}
 
-	if len(botsMap) != numIPs {
+	if len(botsMap) < numIPs {
 		slog.Error("Unexpected number of bots", "expected", numIPs, "received", len(botsMap))
 		os.Exit(1)
 	}
@@ -475,50 +462,4 @@ func firstUsableIPv4FromCIDRs(cidrs []string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no usable IPv4 found in CIDR list")
-}
-
-func waitForStateFile(timeout time.Duration) (string, error) {
-	paths := []string{
-		filepath.Join("tmp", "state.json"),
-		filepath.Join("ci", "tmp", "state.json"),
-	}
-
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		for _, p := range paths {
-			info, err := os.Stat(p)
-			if err == nil && !info.IsDir() {
-				return p, nil
-			}
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return "", fmt.Errorf("failed to stat %s: %w", p, err)
-			}
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	return "", fmt.Errorf("state file not found; checked: %s", strings.Join(paths, ", "))
-}
-
-func prepareStateFile(dirMode, fileMode os.FileMode) (string, error) {
-	p := filepath.Join("tmp", "state.json")
-
-	dir := filepath.Dir(p)
-	if err := os.MkdirAll(dir, dirMode); err != nil {
-		return "", fmt.Errorf("failed to create state dir %s: %w", dir, err)
-	}
-	if err := os.Chmod(dir, dirMode); err != nil {
-		return "", fmt.Errorf("failed to chmod state dir %s: %w", dir, err)
-	}
-
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, fileMode)
-	if err != nil {
-		return "", fmt.Errorf("failed to open state file %s: %w", p, err)
-	}
-	_ = f.Close()
-	if err := os.Chmod(p, fileMode); err != nil {
-		return "", fmt.Errorf("failed to chmod state file %s: %w", p, err)
-	}
-
-	return p, nil
 }

@@ -8,7 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"slices"
+	"sort"
 	"sync"
 	"time"
 )
@@ -165,21 +165,21 @@ func ReduceCIDRs(cidrs []string, log *slog.Logger) []string {
 		prefixes = append(prefixes, prefix.Masked())
 	}
 
-	slices.SortFunc(prefixes, func(a, b netip.Prefix) int {
+	sort.Slice(prefixes, func(i, j int) bool {
+		a := prefixes[i]
+		b := prefixes[j]
+
 		aIs4 := a.Addr().Is4()
 		bIs4 := b.Addr().Is4()
-		if aIs4 && !bIs4 {
-			return -1
-		}
-		if !aIs4 && bIs4 {
-			return 1
+		if aIs4 != bIs4 {
+			return aIs4
 		}
 
 		if a.Bits() != b.Bits() {
-			return a.Bits() - b.Bits()
+			return a.Bits() < b.Bits()
 		}
 
-		return a.Addr().Compare(b.Addr())
+		return a.Addr().Compare(b.Addr()) < 0
 	})
 
 	reduced := make([]netip.Prefix, 0, len(prefixes))
