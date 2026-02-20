@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -28,9 +30,9 @@ const parallelism = 10
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	googleCIDRs, err := helper.FetchGooglebotIPs(log, http.DefaultClient, "https://developers.google.com/static/search/apis/ipranges/googlebot.json")
+	googleCIDRs, err := helper.FetchGoogleCrawlerIPs(log, http.DefaultClient, helper.GoogleCrawlerIPRangeURLs)
 	if err != nil {
-		slog.Error("unable to fetch google bot ips", "err", err)
+		slog.Error("unable to fetch google crawler ips", "err", err)
 		os.Exit(1)
 	}
 
@@ -52,16 +54,27 @@ func main() {
 	fmt.Printf("Generating %d IPs\n", numIPs)
 	ips := generateUniquePublicIPs(numIPs)
 
+	statePath, err := prepareStateFile(0o777, 0o666)
+	if err != nil {
+		slog.Error("Failed to prepare state file", "statePath", statePath, "err", err)
+		os.Exit(1)
+	}
+
 	fmt.Println("Bringing traefik/nginx online")
 	runCommand("docker", "compose", "up", "-d")
 	waitForService("http://localhost")
 	waitForService("http://localhost/app2")
+	waitForGoogleExemptionReady(googleCIDRs)
 
 	fmt.Printf("Making sure %d attempt(s) pass\n", rateLimit)
 	runParallelChecks(ips, rateLimit, "http://localhost")
 
-	time.Sleep(cp.StateSaveInterval + cp.StateSaveJitter + (1 * time.Second))
-	runCommand("jq", ".", "tmp/state.json")
+	statePath, err = waitForStateFile(30 * time.Second)
+	if err != nil {
+		slog.Error("State file was not created in time", "err", err)
+		os.Exit(1)
+	}
+	runCommand("jq", ".", statePath)
 
 	fmt.Printf("Making sure attempt #%d causes a redirect to the challenge page\n", rateLimit+1)
 	ensureRedirect(ips, "http://localhost")
@@ -81,7 +94,7 @@ func main() {
 	time.Sleep(10 * time.Second)
 	checkStateReload()
 
-	runCommand("rm", "tmp/state.json")
+	runCommand("rm", "-f", statePath)
 
 }
 
@@ -400,7 +413,7 @@ func testGoogleBotGetsThrough(googleCIDRs []string) {
 
 	// Prime the rate limiter for the GoogleBot IP with parameters
 	fmt.Printf("Priming rate limiter for GoogleBot IP %s with params (%d requests)\n", googleIP, rateLimit)
-	for i := 0; i < rateLimit; i++ {
+	for i := range rateLimit {
 		output = httpRequest(googleIP, "http://localhost/?foo=bar") // Assign value
 		if output != "" {
 			slog.Error(fmt.Sprintf("GoogleBot with params was challenged prematurely on request #%d", i+1), "ip", googleIP, "output", output)
@@ -420,4 +433,92 @@ func testGoogleBotGetsThrough(googleCIDRs []string) {
 
 	// set things back to normal for other tests
 	runCommand("docker", "compose", "down")
+}
+
+func waitForGoogleExemptionReady(googleCIDRs []string) {
+	googleIP, err := firstUsableIPv4FromCIDRs(googleCIDRs)
+	if err != nil {
+		slog.Warn("Unable to select Google IP for readiness check; skipping warmup", "err", err)
+		return
+	}
+
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		ready := true
+		for i := 0; i < rateLimit+1; i++ {
+			if output := httpRequest(googleIP, "http://localhost"); output != "" {
+				ready = false
+				break
+			}
+		}
+		if ready {
+			fmt.Printf("Google exemption is active for %s\n", googleIP)
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	slog.Error("Timed out waiting for Google crawler IP exemption to become active", "googleIP", googleIP)
+	os.Exit(1)
+}
+
+func firstUsableIPv4FromCIDRs(cidrs []string) (string, error) {
+	for _, cidr := range cidrs {
+		ip, err := getIPFromCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		parsed := net.ParseIP(ip)
+		if parsed != nil && parsed.To4() != nil {
+			return ip, nil
+		}
+	}
+
+	return "", fmt.Errorf("no usable IPv4 found in CIDR list")
+}
+
+func waitForStateFile(timeout time.Duration) (string, error) {
+	paths := []string{
+		filepath.Join("tmp", "state.json"),
+		filepath.Join("ci", "tmp", "state.json"),
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		for _, p := range paths {
+			info, err := os.Stat(p)
+			if err == nil && !info.IsDir() {
+				return p, nil
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("failed to stat %s: %w", p, err)
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	return "", fmt.Errorf("state file not found; checked: %s", strings.Join(paths, ", "))
+}
+
+func prepareStateFile(dirMode, fileMode os.FileMode) (string, error) {
+	p := filepath.Join("tmp", "state.json")
+
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, dirMode); err != nil {
+		return "", fmt.Errorf("failed to create state dir %s: %w", dir, err)
+	}
+	if err := os.Chmod(dir, dirMode); err != nil {
+		return "", fmt.Errorf("failed to chmod state dir %s: %w", dir, err)
+	}
+
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, fileMode)
+	if err != nil {
+		return "", fmt.Errorf("failed to open state file %s: %w", p, err)
+	}
+	_ = f.Close()
+	if err := os.Chmod(p, fileMode); err != nil {
+		return "", fmt.Errorf("failed to chmod state file %s: %w", p, err)
+	}
+
+	return p, nil
 }
