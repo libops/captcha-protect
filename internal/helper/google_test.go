@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"testing"
 )
 
@@ -75,5 +76,51 @@ func TestFetchGooglebotIPs(t *testing.T) {
 		if cidr != expectedCIDRs[i] {
 			t.Errorf("Expected CIDR %s, got %s", expectedCIDRs[i], cidr)
 		}
+	}
+}
+
+func TestReduceCIDRs(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	input := []string{
+		"8.8.8.0/24",
+		"8.8.8.0/25",
+		"8.8.8.128/25",
+		"8.8.8.0/24", // duplicate
+		"2001:4860::/32",
+		"2001:4860:1234::/48",
+	}
+
+	got := ReduceCIDRs(input, log)
+	want := []string{"8.8.8.0/24", "2001:4860::/32"}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected reduced CIDRs: got %v want %v", got, want)
+	}
+}
+
+func TestFetchGoogleCrawlerIPs(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"prefixes":[{"ipv4Prefix":"8.8.8.0/24"}]}`))
+	}))
+	defer serverA.Close()
+
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"prefixes":[{"ipv4Prefix":"8.8.8.0/25"},{"ipv6Prefix":"2001:4860::/32"}]}`))
+	}))
+	defer serverB.Close()
+
+	got, err := FetchGoogleCrawlerIPs(log, serverA.Client(), []string{serverA.URL, serverB.URL})
+	if err != nil {
+		t.Fatalf("FetchGoogleCrawlerIPs failed: %v", err)
+	}
+
+	want := []string{"8.8.8.0/24", "2001:4860::/32"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected CIDRs: got %v want %v", got, want)
 	}
 }
