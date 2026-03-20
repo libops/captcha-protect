@@ -21,7 +21,9 @@ services:
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectParameters: "${PROTECT_PARAMETERS:-false}"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.goodBots: ""
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableGooglebotIPCheck: "true"
-            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectRoutes: "/"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.mode: "regex"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectRoutes: "^/"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.excludeRoutes: "\\/oai\\/request,\\/node\\/\\d+\\/(book-)?manifest"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.persistentStateFile: "/tmp/state.json"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableStateReconciliation: "true"
         healthcheck:
@@ -53,7 +55,9 @@ services:
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectParameters: "${PROTECT_PARAMETERS:-false}"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.goodBots: ""
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableGooglebotIPCheck: "true"
-            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectRoutes: "/"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.mode: "regex"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectRoutes: "^/"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.excludeRoutes: "\\/oai\\/request,\\/node\\/\\d+\\/(book-)?manifest"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.persistentStateFile: "/tmp/state.json"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableStateReconciliation: "true"
         healthcheck:

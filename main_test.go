@@ -803,6 +803,52 @@ func TestVerifiedCacheBypasses(t *testing.T) {
 	}
 }
 
+func TestShouldApplyRegexExcludeRoutesIgnoreQueryString(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.Mode = "regex"
+	config.ProtectRoutes = []string{"^/"}
+	config.ExcludeRoutes = []string{`\/oai\/request`, `\/node\/\d+\/(book-)?manifest`}
+	config.RateLimit = 0
+
+	bc, err := NewCaptchaProtect(context.Background(), nil, config, "test")
+	if err != nil {
+		t.Fatalf("unexpected error %v", err)
+	}
+
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{
+			name: "query string does not prevent exclude route match",
+			url:  "http://example.com/oai/request?foo=bar",
+			want: false,
+		},
+		{
+			name: "regex exclude route matches manifest path",
+			url:  "http://example.com/node/123/manifest",
+			want: false,
+		},
+		{
+			name: "non excluded route still protected",
+			url:  "http://example.com/node/123/other",
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
+			if got := bc.shouldApply(req, "1.2.3.4"); got != tt.want {
+				t.Errorf("shouldApply(%q) = %v; want %v", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStatsPage(t *testing.T) {
 	config := CreateConfig()
 	config.SiteKey = "test"

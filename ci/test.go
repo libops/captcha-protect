@@ -65,6 +65,7 @@ func main() {
 
 	fmt.Printf("Making sure attempt #%d causes a redirect to the challenge page\n", rateLimit+1)
 	ensureRedirect(ips, "http://localhost")
+	testExcludeRouteRegexBypass(ips)
 
 	fmt.Println("\nTesting state sharing between nginx instances...")
 	time.Sleep(cp.StateSaveInterval + cp.StateSaveJitter + (5 * time.Second))
@@ -187,6 +188,36 @@ func ensureRedirect(ips []string, url string) {
 
 		fmt.Printf("Got a redirect! %s\n", output)
 	}
+}
+
+func testExcludeRouteRegexBypass(ips []string) {
+	fmt.Println("\nTesting regex excludeRoutes bypass...")
+
+	testIP := ips[0]
+	tests := []struct {
+		url  string
+		name string
+	}{
+		{
+			url:  "http://localhost/node/123/manifest",
+			name: "/node/123/manifest",
+		},
+		{
+			url:  "http://localhost/oai/request?foo=bar",
+			name: "/oai/request?foo=bar",
+		},
+	}
+
+	for _, tt := range tests {
+		fmt.Printf("Checking excluded route %s with IP %s\n", tt.name, testIP)
+		output := httpRequest(testIP, tt.url)
+		if output != "" {
+			slog.Error("Excluded route was unexpectedly challenged", "ip", testIP, "route", tt.name, "output", output)
+			os.Exit(1)
+		}
+	}
+
+	fmt.Println("✓ regex excludeRoutes bypass works for excluded paths")
 }
 
 func testStateSharing(ips []string) {
