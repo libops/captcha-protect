@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	htemplate "html/template"
 	"log/slog"
 	"math/rand"
 	"net"
@@ -15,7 +16,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"text/template"
 	"time"
 
 	"github.com/libops/captcha-protect/internal/helper"
@@ -93,7 +93,7 @@ type CaptchaProtect struct {
 	googlebotIPs       *helper.GooglebotIPs
 	captchaConfig      CaptchaConfig
 	exemptIps          []*net.IPNet
-	tmpl               *template.Template
+	tmpl               *htemplate.Template
 	ipv4Mask           net.IPMask
 	ipv6Mask           net.IPMask
 	protectRoutesRegex []*regexp.Regexp
@@ -114,6 +114,14 @@ type CaptchaConfig struct {
 
 type captchaResponse struct {
 	Success bool `json:"success"`
+}
+
+type challengeData struct {
+	SiteKey      string
+	FrontendJS   string
+	FrontendKey  string
+	ChallengeURL string
+	Destination  string
 }
 
 func CreateConfig() *Config {
@@ -217,18 +225,18 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	}
 	config.ParseHttpMethods(log)
 
-	var tmpl *template.Template
+	var tmpl *htemplate.Template
 	if _, err := os.Stat(config.ChallengeTmpl); os.IsNotExist(err) {
 		log.Warn("Unable to find template file. Using default template", "challengeTmpl", config.ChallengeTmpl)
 		ts := helper.GetDefaultTmpl()
-		tmpl, err = template.New("challenge").Parse(ts)
+		tmpl, err = htemplate.New("challenge").Parse(ts)
 		if err != nil {
 			return nil, fmt.Errorf("unable to parse challenge template: %v", err)
 		}
 	} else if err != nil {
 		return nil, fmt.Errorf("error checking for template file %s: %v", config.ChallengeTmpl, err)
 	} else {
-		tmpl, err = template.ParseFiles(config.ChallengeTmpl)
+		tmpl, err = htemplate.ParseFiles(config.ChallengeTmpl)
 		if err != nil {
 			return nil, fmt.Errorf("unable to parse challenge template file %s: %v", config.ChallengeTmpl, err)
 		}
@@ -590,12 +598,12 @@ func (bc *CaptchaProtect) servePojJS(rw http.ResponseWriter) {
 func (bc *CaptchaProtect) serveChallengePage(rw http.ResponseWriter, destination string) {
 	activeConfig := bc.getActiveCaptchaConfig()
 
-	d := map[string]string{
-		"SiteKey":      bc.config.SiteKey,
-		"FrontendJS":   activeConfig.js,
-		"FrontendKey":  activeConfig.key,
-		"ChallengeURL": bc.config.ChallengeURL,
-		"Destination":  destination,
+	d := challengeData{
+		SiteKey:      bc.config.SiteKey,
+		FrontendJS:   activeConfig.js,
+		FrontendKey:  activeConfig.key,
+		ChallengeURL: bc.config.ChallengeURL,
+		Destination:  destination,
 	}
 
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -662,22 +670,50 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	if success {
 		bc.verifiedCache.Set(ip, true, exp)
 
-		destination := req.FormValue("destination")
-		if destination == "" {
-			destination = "%2F"
-		}
-		u, err := url.QueryUnescape(destination)
-		if err != nil {
-			bc.log.Error("unable to unescape destination", "destination", destination, "err", err)
-			u = "/"
-		}
-		http.Redirect(rw, req, u, http.StatusFound)
+		destination := normalizeDestination(req.FormValue("destination"))
+		http.Redirect(rw, req, destination, http.StatusFound)
 		return http.StatusFound
 	}
 
 	http.Error(rw, "Validation failed", http.StatusForbidden)
 
 	return http.StatusForbidden
+}
+
+func normalizeDestination(destination string) string {
+	if destination == "" {
+		return "/"
+	}
+
+	unescaped, err := url.QueryUnescape(destination)
+	if err == nil && unescaped != destination {
+		if sanitized := sanitizeDestination(unescaped); sanitized != "/" || unescaped == "/" {
+			return sanitized
+		}
+	}
+
+	return sanitizeDestination(destination)
+}
+
+func sanitizeDestination(destination string) string {
+	if destination == "" {
+		return "/"
+	}
+
+	u, err := url.Parse(destination)
+	if err != nil {
+		return "/"
+	}
+
+	if u.IsAbs() || u.Host != "" {
+		return "/"
+	}
+
+	if !strings.HasPrefix(u.Path, "/") {
+		return "/"
+	}
+
+	return u.RequestURI()
 }
 
 func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {

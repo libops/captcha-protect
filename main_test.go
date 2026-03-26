@@ -1895,3 +1895,53 @@ func TestGooglebotIPCheckLoopInitialFetchError(t *testing.T) {
 		t.Fatal("did not expect googlebot IPs to update when initial fetch fails")
 	}
 }
+
+func TestServeChallengePageEscapesDestination(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test-site-key"
+	config.SecretKey = "test-secret-key"
+	config.ProtectRoutes = []string{"/"}
+	config.ChallengeStatusCode = http.StatusTooManyRequests
+
+	bc, err := NewCaptchaProtect(context.Background(), nil, config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create CaptchaProtect: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	maliciousDestination := `" /><script>alert(1)</script>`
+
+	bc.serveChallengePage(rr, maliciousDestination)
+
+	body := rr.Body.String()
+	if !strings.Contains(body, `value="&#34; /&gt;&lt;script&gt;alert(1)&lt;/script&gt;"`) {
+		t.Fatalf("expected destination to be HTML-escaped in attribute context, body=%q", body)
+	}
+	if strings.Contains(body, `value="" /><script>alert(1)</script>`) {
+		t.Fatalf("expected raw destination not to be injected into HTML, body=%q", body)
+	}
+}
+
+func TestNormalizeDestination(t *testing.T) {
+	tests := []struct {
+		name        string
+		destination string
+		want        string
+	}{
+		{name: "empty", destination: "", want: "/"},
+		{name: "decoded local path", destination: "/home?foo=bar", want: "/home?foo=bar"},
+		{name: "encoded local path", destination: "%2Fhome%3Ffoo%3Dbar", want: "/home?foo=bar"},
+		{name: "absolute url", destination: "https://evil.com/phish", want: "/"},
+		{name: "protocol relative url", destination: "//evil.com/phish", want: "/"},
+		{name: "relative path", destination: "home", want: "/"},
+		{name: "invalid escape", destination: "%ZZ", want: "/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeDestination(tt.destination); got != tt.want {
+				t.Fatalf("normalizeDestination(%q) = %q, want %q", tt.destination, got, tt.want)
+			}
+		})
+	}
+}
