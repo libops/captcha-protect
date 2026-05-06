@@ -33,13 +33,13 @@ func main() {
 func waitForService(url string) {
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(url)
+		resp, err := http.Get(url) // #nosec G107 -- CI smoke test only calls fixed localhost URLs.
 		if err == nil && resp.StatusCode < 500 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return
 		}
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		fmt.Println("waiting for traefik/nginx to come online...")
 		time.Sleep(1 * time.Second)
@@ -92,7 +92,9 @@ func httpRequest(ip, url string) string {
 		slog.Error("Request failed", "err", err)
 		os.Exit(1)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	location, err := resp.Location()
 	if err != nil {
@@ -107,7 +109,7 @@ func httpRequest(ip, url string) string {
 }
 
 func runCommand(name string, args ...string) {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) // #nosec G204 -- CI smoke test invokes fixed docker compose commands.
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), fmt.Sprintf("RATE_LIMIT=%d", rateLimit))

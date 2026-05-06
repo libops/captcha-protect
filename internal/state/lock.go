@@ -33,17 +33,20 @@ func (fl *FileLock) Lock() error {
 
 	for {
 		// Try to create lock file exclusively
-		f, err := os.OpenFile(fl.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(fl.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err == nil {
 			// Successfully created lock file
-			_, err = f.WriteString(strconv.Itoa(fl.pid))
-			f.Close()
-			// Check for write error
-			if err != nil {
+			_, writeErr := f.WriteString(strconv.Itoa(fl.pid))
+			closeErr := f.Close()
+			if writeErr != nil {
 				// We got the lock but failed to write.
 				// Best effort to clean up, then return the error.
 				_ = os.Remove(fl.lockPath)
-				return fmt.Errorf("failed to write pid to lock file: %v", err)
+				return fmt.Errorf("failed to write pid to lock file: %v", writeErr)
+			}
+			if closeErr != nil {
+				_ = os.Remove(fl.lockPath)
+				return fmt.Errorf("failed to close lock file: %v", closeErr)
 			}
 			// We hold the lock
 			return nil

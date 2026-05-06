@@ -107,7 +107,7 @@ func SaveStateToFileWithMetrics(
 	// Reconcile with existing file state if enabled
 	if reconcile {
 		readStart := time.Now()
-		fileContent, readErr := os.ReadFile(filePath)
+		fileContent, readErr := os.ReadFile(filePath) // #nosec G304 -- persistent state path is trusted middleware configuration.
 		metrics.ReadMs = time.Since(readStart).Milliseconds()
 
 		if readErr == nil && len(fileContent) > 0 {
@@ -134,9 +134,9 @@ func SaveStateToFileWithMetrics(
 		return metrics, err
 	}
 
-	// Write to disk
+	// Write to disk. State can contain client IPs, so keep snapshots private.
 	writeStart := time.Now()
-	err = atomicWriteFile(filePath, jsonData, 0644)
+	err = atomicWriteFile(filePath, jsonData, 0600)
 	metrics.WriteMs = time.Since(writeStart).Milliseconds()
 
 	if err != nil {
@@ -186,7 +186,7 @@ func LoadStateFromFile(
 		return err
 	}
 
-	fileContent, err := os.ReadFile(filePath)
+	fileContent, err := os.ReadFile(filePath) // #nosec G304 -- persistent state path is trusted middleware configuration.
 	if err != nil || len(fileContent) == 0 {
 		return err
 	}
@@ -217,7 +217,7 @@ func ReconcileStateFromFile(
 		return err
 	}
 
-	fileContent, err := os.ReadFile(filePath)
+	fileContent, err := os.ReadFile(filePath) // #nosec G304 -- persistent state path is trusted middleware configuration.
 	if err != nil || len(fileContent) == 0 {
 		return err
 	}

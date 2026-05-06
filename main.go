@@ -2,11 +2,12 @@ package captcha_protect
 
 import (
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	htemplate "html/template"
 	"log/slog"
-	"math/rand"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -162,6 +163,14 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	return NewCaptchaProtect(ctx, next, config, name)
 }
 
+func redactedConfig(config *Config) Config {
+	c := *config
+	if c.SecretKey != "" {
+		c.SecretKey = "[REDACTED]"
+	}
+	return c
+}
+
 func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, name string) (*CaptchaProtect, error) {
 	log := plog.New(config.LogLevel)
 
@@ -177,7 +186,7 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	}
 
 	expiration := time.Duration(config.Window) * time.Second
-	log.Debug("Captcha config", "config", config)
+	log.Debug("Captcha config", "config", redactedConfig(config))
 
 	if len(config.ProtectRoutes) == 0 && config.Mode != "suffix" {
 		return nil, fmt.Errorf("you must protect at least one route with the protectRoutes config value. / will cover your entire site")
@@ -1028,7 +1037,7 @@ func (c *Config) ParseHttpMethods(log *slog.Logger) {
 
 func (bc *CaptchaProtect) saveState(ctx context.Context) {
 	// Add random jitter to prevent multiple instances from trying to save simultaneously
-	jitter := time.Duration(rand.Intn(int(StateSaveJitter.Milliseconds()))) * time.Millisecond
+	jitter := stateSaveJitter()
 	interval := StateSaveInterval + jitter
 
 	bc.log.Debug("State save configured", "baseInterval", StateSaveInterval, "jitter", jitter, "actualInterval", interval)
@@ -1036,13 +1045,16 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		bc.log.Error("unable to save state, could not open or create file", "stateFile", bc.config.PersistentStateFile, "err", err)
 		return
 	}
 	// we made sure the file is writable, we can continue in our loop
-	file.Close()
+	if err := file.Close(); err != nil {
+		bc.log.Error("unable to save state, could not close state file", "stateFile", bc.config.PersistentStateFile, "err", err)
+		return
+	}
 	bc.refreshStateFileModTime()
 
 	lastSave := time.Time{}
@@ -1075,6 +1087,20 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func stateSaveJitter() time.Duration {
+	maxJitter := big.NewInt(StateSaveJitter.Milliseconds())
+	if maxJitter.Sign() <= 0 {
+		return 0
+	}
+
+	jitter, err := crand.Int(crand.Reader, maxJitter)
+	if err != nil {
+		return 0
+	}
+
+	return time.Duration(jitter.Int64()) * time.Millisecond
 }
 
 // saveStateNow performs an immediate state save using the state package.

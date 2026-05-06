@@ -286,6 +286,9 @@ func TestSaveStateToFile(t *testing.T) {
 		if fileInfo.Size() == 0 {
 			t.Error("State file is empty")
 		}
+		if mode := fileInfo.Mode().Perm(); mode != 0600 {
+			t.Fatalf("State file mode = %v, want 0600", mode)
+		}
 
 		// Load and verify the saved data
 		savedData, err := os.ReadFile(tmpFile)

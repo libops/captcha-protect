@@ -706,6 +706,22 @@ func TestNewCaptchaProtectValidation(t *testing.T) {
 	}
 }
 
+func TestRedactedConfigDoesNotExposeSecretKey(t *testing.T) {
+	config := CreateConfig()
+	config.SecretKey = "super-secret"
+
+	redacted := redactedConfig(config)
+	if redacted.SecretKey == config.SecretKey {
+		t.Fatal("expected secret key to be redacted")
+	}
+	if redacted.SecretKey != "[REDACTED]" {
+		t.Fatalf("unexpected redacted secret value %q", redacted.SecretKey)
+	}
+	if config.SecretKey != "super-secret" {
+		t.Fatal("redactedConfig mutated the original config")
+	}
+}
+
 func TestRateLimiting(t *testing.T) {
 	config := CreateConfig()
 	config.SiteKey = "test"

@@ -27,8 +27,12 @@ func TestFileLock_LockUnlock(t *testing.T) {
 		t.Fatalf("Lock() error = %v", err)
 	}
 
-	if _, err := os.Stat(lockPath); err != nil {
+	info, err := os.Stat(lockPath)
+	if err != nil {
 		t.Fatalf("lock file was not created: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0600 {
+		t.Fatalf("lock file mode = %v, want 0600", mode)
 	}
 
 	content, err := os.ReadFile(lockPath)
