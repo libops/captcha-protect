@@ -27,16 +27,21 @@ type State struct {
 	Memory   map[string]uintptr    `json:"memory"`
 }
 
-type persistentEntry[T any] struct {
-	Value      T     `json:"value"`
+type persistentRateEntry struct {
+	Value      uint  `json:"value"`
+	Expiration int64 `json:"expiration"`
+}
+
+type persistentBoolEntry struct {
+	Value      bool  `json:"value"`
 	Expiration int64 `json:"expiration"`
 }
 
 type persistentState struct {
-	Rate     map[string]persistentEntry[uint] `json:"rate"`
-	Bots     map[string]persistentEntry[bool] `json:"bots"`
-	Verified map[string]persistentEntry[bool] `json:"verified"`
-	Memory   map[string]uintptr               `json:"memory"`
+	Rate     map[string]persistentRateEntry `json:"rate"`
+	Bots     map[string]persistentBoolEntry `json:"bots"`
+	Verified map[string]persistentBoolEntry `json:"verified"`
+	Memory   map[string]uintptr             `json:"memory"`
 }
 
 type ignoredJSON struct{}
@@ -46,9 +51,9 @@ func (ignoredJSON) UnmarshalJSON(_ []byte) error {
 }
 
 type reconcileStateFile struct {
-	Rate     map[string]persistentEntry[uint] `json:"rate"`
-	Bots     ignoredJSON                      `json:"bots"` // Bot cache is derived and too large to merge on every state save.
-	Verified map[string]persistentEntry[bool] `json:"verified"`
+	Rate     map[string]persistentRateEntry `json:"rate"`
+	Bots     ignoredJSON                    `json:"bots"` // Bot cache is derived and too large to merge on every state save.
+	Verified map[string]persistentBoolEntry `json:"verified"`
 }
 
 type SaveMetrics struct {
@@ -446,12 +451,22 @@ func loadCacheEntries[T any](
 }
 
 func setPersistentState(state persistentState, rateCache, botCache, verifiedCache *lru.Cache) {
-	loadPersistentEntries(state.Rate, rateCache)
-	loadPersistentEntries(state.Bots, botCache)
-	loadPersistentEntries(state.Verified, verifiedCache)
+	loadPersistentRateEntries(state.Rate, rateCache)
+	loadPersistentBoolEntries(state.Bots, botCache)
+	loadPersistentBoolEntries(state.Verified, verifiedCache)
 }
 
-func loadPersistentEntries[T any](entries map[string]persistentEntry[T], cache *lru.Cache) {
+func loadPersistentRateEntries(entries map[string]persistentRateEntry, cache *lru.Cache) {
+	now := time.Now().UnixNano()
+	for key, entry := range entries {
+		if entry.Expiration > 0 && entry.Expiration <= now {
+			continue
+		}
+		cache.Set(key, entry.Value, calculateDuration(entry.Expiration, now))
+	}
+}
+
+func loadPersistentBoolEntries(entries map[string]persistentBoolEntry, cache *lru.Cache) {
 	now := time.Now().UnixNano()
 	for key, entry := range entries {
 		if entry.Expiration > 0 && entry.Expiration <= now {
@@ -466,11 +481,11 @@ func reconcilePersistentFileState(state reconcileStateFile, rateCache, verifiedC
 	verifiedItems := verifiedCache.Items()
 
 	reconcilePersistentRateCache(state.Rate, rateItems, rateCache)
-	reconcilePersistentCacheEntries(state.Verified, verifiedItems, verifiedCache)
+	reconcilePersistentBoolCacheEntries(state.Verified, verifiedItems, verifiedCache)
 }
 
-func reconcilePersistentCacheEntries[T any](
-	fileEntries map[string]persistentEntry[T],
+func reconcilePersistentBoolCacheEntries(
+	fileEntries map[string]persistentBoolEntry,
 	memItems map[string]lru.Item,
 	cache *lru.Cache,
 ) {
@@ -494,7 +509,7 @@ func reconcilePersistentCacheEntries[T any](
 }
 
 func reconcilePersistentRateCache(
-	fileEntries map[string]persistentEntry[uint],
+	fileEntries map[string]persistentRateEntry,
 	memItems map[string]lru.Item,
 	cache *lru.Cache,
 ) {

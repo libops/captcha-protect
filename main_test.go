@@ -1060,7 +1060,7 @@ func TestRegisterRequestCapsPersistedRateCounter(t *testing.T) {
 	if got, want := v.(uint), bc.config.RateLimit+1; got != want {
 		t.Fatalf("Expected rate counter to cap at %d, got %d", want, got)
 	}
-	if got, want := bc.stateDirty.Load(), uint64(bc.config.RateLimit+1); got != want {
+	if got, want := bc.currentStateDirty(), uint64(bc.config.RateLimit+1); got != want {
 		t.Fatalf("Expected dirty counter to track only effective mutations, got %d want %d", got, want)
 	}
 }
@@ -1115,8 +1115,10 @@ func TestStateBookkeepingErrorBranches(t *testing.T) {
 	missingFile := filepath.Join(t.TempDir(), "missing", "state.json")
 	bc := newStateOnlyCaptchaProtect(missingFile, 2)
 
-	bc.stateDirty.Store(1)
-	bc.stateSavedDirty.Store(2)
+	bc.stateMu.Lock()
+	bc.stateDirty = 1
+	bc.stateSavedDirty = 2
+	bc.stateMu.Unlock()
 	if got := bc.unsavedStateChanges(); got != 0 {
 		t.Fatalf("unsavedStateChanges with saved counter ahead = %d, want 0", got)
 	}

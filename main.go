@@ -17,7 +17,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/libops/captcha-protect/internal/helper"
@@ -100,8 +99,9 @@ type CaptchaProtect struct {
 	ipv6Mask           net.IPMask
 	protectRoutesRegex []*regexp.Regexp
 	excludeRoutesRegex []*regexp.Regexp
-	stateDirty         atomic.Uint64
-	stateSavedDirty    atomic.Uint64
+	stateMu            sync.Mutex
+	stateDirty         uint64
+	stateSavedDirty    uint64
 	stateFileModTime   time.Time
 
 	// Circuit breaker fields
@@ -1106,7 +1106,7 @@ func stateSaveJitter() time.Duration {
 // saveStateNow performs an immediate state save using the state package.
 func (bc *CaptchaProtect) saveStateNow() bool {
 	reconcile := bc.config.EnableStateReconciliation == "true"
-	dirtyAtStart := bc.stateDirty.Load()
+	dirtyAtStart := bc.currentStateDirty()
 
 	metrics, err := state.SaveStateToFileWithMetrics(
 		bc.config.PersistentStateFile,
@@ -1121,7 +1121,7 @@ func (bc *CaptchaProtect) saveStateNow() bool {
 		bc.log.Error("failed to save state", "err", err)
 		return false
 	}
-	bc.stateSavedDirty.Store(dirtyAtStart)
+	bc.markStateSaved(dirtyAtStart)
 	bc.refreshStateFileModTime()
 
 	bc.log.Debug("State saved successfully",
@@ -1159,20 +1159,39 @@ func (bc *CaptchaProtect) markStateDirty() {
 	if bc.config.PersistentStateFile == "" {
 		return
 	}
-	bc.stateDirty.Add(1)
+	bc.stateMu.Lock()
+	bc.stateDirty++
+	bc.stateMu.Unlock()
 }
 
 func (bc *CaptchaProtect) hasUnsavedState() bool {
-	return bc.stateDirty.Load() != bc.stateSavedDirty.Load()
+	bc.stateMu.Lock()
+	defer bc.stateMu.Unlock()
+	return bc.stateDirty != bc.stateSavedDirty
 }
 
 func (bc *CaptchaProtect) unsavedStateChanges() uint64 {
-	dirty := bc.stateDirty.Load()
-	saved := bc.stateSavedDirty.Load()
+	bc.stateMu.Lock()
+	defer bc.stateMu.Unlock()
+
+	dirty := bc.stateDirty
+	saved := bc.stateSavedDirty
 	if dirty < saved {
 		return 0
 	}
 	return dirty - saved
+}
+
+func (bc *CaptchaProtect) currentStateDirty() uint64 {
+	bc.stateMu.Lock()
+	defer bc.stateMu.Unlock()
+	return bc.stateDirty
+}
+
+func (bc *CaptchaProtect) markStateSaved(dirty uint64) {
+	bc.stateMu.Lock()
+	defer bc.stateMu.Unlock()
+	bc.stateSavedDirty = dirty
 }
 
 func (bc *CaptchaProtect) refreshStateFileModTime() {
