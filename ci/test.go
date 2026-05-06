@@ -16,9 +16,10 @@ func main() {
 	_ = os.Remove("./tmp/state.json")
 
 	fmt.Println("Bringing traefik/nginx online")
-	runCommand("docker", "compose", "up", "-d")
+	runCommand("docker", "compose", "up", "-d", "--force-recreate")
 	waitForService("http://localhost")
 	waitForService("http://localhost/app2")
+	waitForProtectedRoute("http://localhost", "http://localhost/challenge?destination=%2F")
 
 	fmt.Println("Testing Traefik plugin smoke path...")
 	assertProtectedRoute("107.198.130.166", "http://localhost", "http://localhost/challenge?destination=%2F")
@@ -49,12 +50,44 @@ func waitForService(url string) {
 	os.Exit(1)
 }
 
+func waitForProtectedRoute(url, expectedURL string) {
+	deadline := time.Now().Add(90 * time.Second)
+	attempt := 0
+	for time.Now().Before(deadline) {
+		readinessIP := fmt.Sprintf("109.%d.130.168", attempt%250)
+		if routeIsProtected(readinessIP, url, expectedURL) {
+			return
+		}
+		attempt++
+		fmt.Println("waiting for captcha-protect middleware to become active...")
+		time.Sleep(1 * time.Second)
+	}
+
+	slog.Error("Timed out waiting for captcha-protect middleware", "url", url, "expected", expectedURL)
+	os.Exit(1)
+}
+
+func routeIsProtected(ip, url, expectedURL string) bool {
+	for i := 0; i < rateLimit; i++ {
+		if output, err := httpRequest(ip, url); err != nil || output != "" {
+			return false
+		}
+	}
+
+	output, err := httpRequest(ip, url)
+	return err == nil && output == expectedURL
+}
+
 func assertProtectedRoute(ip, url, expectedURL string) {
 	for i := 0; i < rateLimit; i++ {
 		assertNoRedirect(ip, url)
 	}
 
-	output := httpRequest(ip, url)
+	output, err := httpRequest(ip, url)
+	if err != nil {
+		slog.Error("Request failed", "ip", ip, "url", url, "err", err)
+		os.Exit(1)
+	}
 	if output != expectedURL {
 		slog.Error("Expected protected route to redirect", "ip", ip, "url", url, "output", output, "expected", expectedURL)
 		os.Exit(1)
@@ -62,14 +95,18 @@ func assertProtectedRoute(ip, url, expectedURL string) {
 }
 
 func assertNoRedirect(ip, url string) {
-	output := httpRequest(ip, url)
+	output, err := httpRequest(ip, url)
+	if err != nil {
+		slog.Error("Request failed", "ip", ip, "url", url, "err", err)
+		os.Exit(1)
+	}
 	if output != "" {
 		slog.Error("Unexpected redirect", "ip", ip, "url", url, "output", output)
 		os.Exit(1)
 	}
 }
 
-func httpRequest(ip, url string) string {
+func httpRequest(ip, url string) (string, error) {
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) > 0 {
@@ -82,15 +119,13 @@ func httpRequest(ip, url string) string {
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		slog.Error("Failed to create request", "err", err)
-		os.Exit(1)
+		return "", err
 	}
 	req.Header.Set("X-Forwarded-For", ip)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Error("Request failed", "err", err)
-		os.Exit(1)
+		return "", err
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -99,13 +134,12 @@ func httpRequest(ip, url string) string {
 	location, err := resp.Location()
 	if err != nil {
 		if err == http.ErrNoLocation {
-			return ""
+			return "", nil
 		}
-		slog.Error("Failed to get redirect URL", "err", err)
-		os.Exit(1)
+		return "", err
 	}
 
-	return strings.TrimSpace(location.String())
+	return strings.TrimSpace(location.String()), nil
 }
 
 func runCommand(name string, args ...string) {
