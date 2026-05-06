@@ -16,10 +16,9 @@ func main() {
 	_ = os.Remove("./tmp/state.json")
 
 	fmt.Println("Bringing traefik/nginx online")
-	runCommand("docker", "compose", "up", "-d", "--force-recreate")
+	runCommand("docker", "compose", "up", "-d")
 	waitForService("http://localhost")
 	waitForService("http://localhost/app2")
-	waitForProtectedRoute("http://localhost", "http://localhost/challenge?destination=%2F")
 
 	fmt.Println("Testing Traefik plugin smoke path...")
 	assertProtectedRoute("107.198.130.166", "http://localhost", "http://localhost/challenge?destination=%2F")
@@ -48,34 +47,6 @@ func waitForService(url string) {
 
 	slog.Error("Timed out waiting for service", "url", url)
 	os.Exit(1)
-}
-
-func waitForProtectedRoute(url, expectedURL string) {
-	deadline := time.Now().Add(90 * time.Second)
-	attempt := 0
-	for time.Now().Before(deadline) {
-		readinessIP := fmt.Sprintf("109.%d.130.168", attempt%250)
-		if routeIsProtected(readinessIP, url, expectedURL) {
-			return
-		}
-		attempt++
-		fmt.Println("waiting for captcha-protect middleware to become active...")
-		time.Sleep(1 * time.Second)
-	}
-
-	slog.Error("Timed out waiting for captcha-protect middleware", "url", url, "expected", expectedURL)
-	os.Exit(1)
-}
-
-func routeIsProtected(ip, url, expectedURL string) bool {
-	for i := 0; i < rateLimit; i++ {
-		if output, err := httpRequest(ip, url); err != nil || output != "" {
-			return false
-		}
-	}
-
-	output, err := httpRequest(ip, url)
-	return err == nil && output == expectedURL
 }
 
 func assertProtectedRoute(ip, url, expectedURL string) {
