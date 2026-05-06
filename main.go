@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libops/captcha-protect/internal/helper"
@@ -98,6 +99,9 @@ type CaptchaProtect struct {
 	ipv6Mask           net.IPMask
 	protectRoutesRegex []*regexp.Regexp
 	excludeRoutesRegex []*regexp.Regexp
+	stateDirty         atomic.Uint64
+	stateSavedDirty    atomic.Uint64
+	stateFileModTime   time.Time
 
 	// Circuit breaker fields
 	mu                      sync.RWMutex
@@ -669,6 +673,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 
 	if success {
 		bc.verifiedCache.Set(ip, true, exp)
+		bc.markStateDirty()
 
 		destination := normalizeDestination(req.FormValue("destination"))
 		http.Redirect(rw, req, destination, http.StatusFound)
@@ -880,13 +885,21 @@ func (bc *CaptchaProtect) trippedRateLimit(ip string) bool {
 func (bc *CaptchaProtect) registerRequest(ip string) {
 	err := bc.rateCache.Add(ip, uint(1), lru.DefaultExpiration)
 	if err == nil {
+		bc.markStateDirty()
+		return
+	}
+
+	v, ok := bc.rateCache.Get(ip)
+	if ok && v.(uint) > bc.config.RateLimit {
 		return
 	}
 
 	_, err = bc.rateCache.IncrementUint(ip, uint(1))
 	if err != nil {
 		bc.log.Error("unable to set rate cache", "ip", ip, "err", err)
+		return
 	}
+	bc.markStateDirty()
 }
 
 func (bc *CaptchaProtect) getClientIP(req *http.Request) (string, string) {
@@ -992,6 +1005,7 @@ func (bc *CaptchaProtect) isGoodBot(req *http.Request, clientIP string) bool {
 		v = helper.IsIpGoodBot(clientIP, bc.config.GoodBots)
 	}
 	bc.botCache.Set(clientIP, v, lru.DefaultExpiration)
+	bc.markStateDirty()
 	return v
 }
 
@@ -1019,7 +1033,7 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 
 	bc.log.Debug("State save configured", "baseInterval", StateSaveInterval, "jitter", jitter, "actualInterval", interval)
 
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_CREATE|os.O_WRONLY, 0644)
@@ -1029,26 +1043,46 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 	}
 	// we made sure the file is writable, we can continue in our loop
 	file.Close()
+	bc.refreshStateFileModTime()
+
+	lastSave := time.Time{}
 
 	for {
 		select {
 		case <-ticker.C:
-			bc.log.Debug("Periodic state save triggered")
-			bc.saveStateNow()
+			if bc.config.EnableStateReconciliation == "true" {
+				bc.reconcileStateFromFileIfChanged()
+			}
+			if !bc.hasUnsavedState() {
+				continue
+			}
+			if !lastSave.IsZero() && time.Since(lastSave) < interval {
+				continue
+			}
+			bc.log.Debug("Dirty state save triggered", "dirtyChanges", bc.unsavedStateChanges())
+			if bc.saveStateNow() {
+				lastSave = time.Now()
+			}
 
 		case <-ctx.Done():
-			bc.log.Debug("Context cancelled, running saveState before shutdown")
-			bc.saveStateNow()
+			if bc.config.EnableStateReconciliation == "true" {
+				bc.reconcileStateFromFileIfChanged()
+			}
+			if bc.hasUnsavedState() {
+				bc.log.Debug("Context cancelled, running saveState before shutdown")
+				bc.saveStateNow()
+			}
 			return
 		}
 	}
 }
 
 // saveStateNow performs an immediate state save using the state package.
-func (bc *CaptchaProtect) saveStateNow() {
+func (bc *CaptchaProtect) saveStateNow() bool {
 	reconcile := bc.config.EnableStateReconciliation == "true"
+	dirtyAtStart := bc.stateDirty.Load()
 
-	lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs, err := state.SaveStateToFile(
+	metrics, err := state.SaveStateToFileWithMetrics(
 		bc.config.PersistentStateFile,
 		reconcile,
 		bc.rateCache,
@@ -1059,22 +1093,23 @@ func (bc *CaptchaProtect) saveStateNow() {
 
 	if err != nil {
 		bc.log.Error("failed to save state", "err", err)
-		return
+		return false
 	}
+	bc.stateSavedDirty.Store(dirtyAtStart)
+	bc.refreshStateFileModTime()
 
-	// Get current state for logging (already marshaled in SaveStateToFile, but we need counts)
-	currentState := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
 	bc.log.Debug("State saved successfully",
-		"rateEntries", len(currentState.Rate),
-		"botEntries", len(currentState.Bots),
-		"verifiedEntries", len(currentState.Verified),
-		"lockMs", lockMs,
-		"readMs", readMs,
-		"reconcileMs", reconcileMs,
-		"marshalMs", marshalMs,
-		"writeMs", writeMs,
-		"totalMs", totalMs,
+		"rateEntries", metrics.RateEntries,
+		"botEntries", metrics.BotEntries,
+		"verifiedEntries", metrics.VerifiedEntries,
+		"lockMs", metrics.LockMs,
+		"readMs", metrics.ReadMs,
+		"reconcileMs", metrics.ReconcileMs,
+		"marshalMs", metrics.MarshalMs,
+		"writeMs", metrics.WriteMs,
+		"totalMs", metrics.TotalMs,
 	)
+	return true
 }
 
 func (bc *CaptchaProtect) loadState() {
@@ -1091,6 +1126,63 @@ func (bc *CaptchaProtect) loadState() {
 	}
 
 	bc.log.Info("Loaded previous state")
+	bc.refreshStateFileModTime()
+}
+
+func (bc *CaptchaProtect) markStateDirty() {
+	if bc.config.PersistentStateFile == "" {
+		return
+	}
+	bc.stateDirty.Add(1)
+}
+
+func (bc *CaptchaProtect) hasUnsavedState() bool {
+	return bc.stateDirty.Load() != bc.stateSavedDirty.Load()
+}
+
+func (bc *CaptchaProtect) unsavedStateChanges() uint64 {
+	dirty := bc.stateDirty.Load()
+	saved := bc.stateSavedDirty.Load()
+	if dirty < saved {
+		return 0
+	}
+	return dirty - saved
+}
+
+func (bc *CaptchaProtect) refreshStateFileModTime() {
+	info, err := os.Stat(bc.config.PersistentStateFile)
+	if err != nil {
+		return
+	}
+	bc.stateFileModTime = info.ModTime()
+}
+
+func (bc *CaptchaProtect) reconcileStateFromFileIfChanged() {
+	info, err := os.Stat(bc.config.PersistentStateFile)
+	if err != nil {
+		return
+	}
+	modTime := info.ModTime()
+	if !bc.stateFileModTime.IsZero() && !modTime.After(bc.stateFileModTime) {
+		return
+	}
+
+	err = state.ReconcileStateFromFile(
+		bc.config.PersistentStateFile,
+		bc.rateCache,
+		bc.botCache,
+		bc.verifiedCache,
+	)
+	if err != nil {
+		bc.log.Warn("failed to reconcile state file", "err", err)
+		return
+	}
+
+	if info, err := os.Stat(bc.config.PersistentStateFile); err == nil {
+		modTime = info.ModTime()
+	}
+	bc.stateFileModTime = modTime
+	bc.log.Debug("Reconciled newer state file")
 }
 
 func (bc *CaptchaProtect) ChallengeOnPage() bool {

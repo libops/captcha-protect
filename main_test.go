@@ -974,15 +974,6 @@ func TestStatePersistence(t *testing.T) {
 	config.SiteKey = "test"
 	config.SecretKey = "test"
 	config.ProtectRoutes = []string{"/"}
-	config.PersistentStateFile = tmpFile
-
-	// Don't pass a context to avoid starting background goroutines
-	bc1, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
-
-	// Add some state
-	bc1.rateCache.Set("192.168.0.0", uint(10), 1*time.Hour)
-	bc1.verifiedCache.Set("1.2.3.4", true, 1*time.Hour)
-	bc1.botCache.Set("5.6.7.8", false, 1*time.Hour)
 
 	// Manually save state by writing the file directly
 	// This tests the state format without relying on the background goroutine
@@ -1015,6 +1006,8 @@ func TestStatePersistence(t *testing.T) {
 
 	// Create new instance - should load state
 	bc2, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+	bc2.config.PersistentStateFile = tmpFile
+	bc2.loadState()
 
 	// Check rate cache
 	val, found := bc2.rateCache.Get("192.168.0.0")
@@ -1032,6 +1025,27 @@ func TestStatePersistence(t *testing.T) {
 	botVal, found := bc2.botCache.Get("5.6.7.8")
 	if !found || botVal.(bool) != false {
 		t.Error("Bot cache state not persisted correctly")
+	}
+}
+
+func TestRegisterRequestCapsPersistedRateCounter(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "state.json")
+
+	bc := newStateOnlyCaptchaProtect(tmpFile, 2)
+
+	for i := 0; i < 5; i++ {
+		bc.registerRequest("192.168.0.0")
+	}
+
+	v, ok := bc.rateCache.Get("192.168.0.0")
+	if !ok {
+		t.Fatal("Expected rate cache entry")
+	}
+	if got, want := v.(uint), bc.config.RateLimit+1; got != want {
+		t.Fatalf("Expected rate counter to cap at %d, got %d", want, got)
+	}
+	if got, want := bc.stateDirty.Load(), uint64(bc.config.RateLimit+1); got != want {
+		t.Fatalf("Expected dirty counter to track only effective mutations, got %d want %d", got, want)
 	}
 }
 
@@ -1228,13 +1242,14 @@ func TestLoadStateInvalidJSON(t *testing.T) {
 	config.SiteKey = "test"
 	config.SecretKey = "test"
 	config.ProtectRoutes = []string{"/"}
-	config.PersistentStateFile = tmpFile
 
 	// Should not panic, just log error
 	bc, err := NewCaptchaProtect(context.Background(), nil, config, "test")
 	if err != nil {
 		t.Errorf("Should not fail on invalid state JSON: %v", err)
 	}
+	bc.config.PersistentStateFile = tmpFile
+	bc.loadState()
 
 	// Caches should be empty
 	if bc.rateCache.ItemCount() != 0 {
@@ -1243,6 +1258,7 @@ func TestLoadStateInvalidJSON(t *testing.T) {
 
 	// Clean up the file before temp dir cleanup
 	_ = os.Remove(tmpFile)
+	_ = os.Remove(tmpFile + ".lock")
 }
 
 func TestParseHttpMethodsInvalid(t *testing.T) {

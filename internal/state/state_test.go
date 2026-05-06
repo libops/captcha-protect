@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -381,6 +382,43 @@ func TestSaveStateToFile(t *testing.T) {
 		}
 	})
 
+	t.Run("Save with metrics", func(t *testing.T) {
+		tmpFile := t.TempDir() + "/state.json"
+
+		rateCache := lru.New(1*time.Hour, 1*time.Minute)
+		botCache := lru.New(1*time.Hour, 1*time.Minute)
+		verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
+
+		rateCache.Set("192.168.0.0", uint(10), lru.DefaultExpiration)
+		botCache.Set("1.2.3.4", false, lru.DefaultExpiration)
+		verifiedCache.Set("5.6.7.8", true, lru.DefaultExpiration)
+
+		metrics, err := SaveStateToFileWithMetrics(
+			tmpFile,
+			false,
+			rateCache,
+			botCache,
+			verifiedCache,
+			testLogger(),
+		)
+		if err != nil {
+			t.Fatalf("SaveStateToFileWithMetrics failed: %v", err)
+		}
+
+		if metrics.RateEntries != 1 {
+			t.Errorf("Expected 1 rate entry, got %d", metrics.RateEntries)
+		}
+		if metrics.BotEntries != 1 {
+			t.Errorf("Expected 1 bot entry, got %d", metrics.BotEntries)
+		}
+		if metrics.VerifiedEntries != 1 {
+			t.Errorf("Expected 1 verified entry, got %d", metrics.VerifiedEntries)
+		}
+		if matches, err := filepath.Glob(tmpFile + ".tmp-*"); err != nil || len(matches) != 0 {
+			t.Fatalf("Expected no leftover temp files, matches=%v err=%v", matches, err)
+		}
+	})
+
 	t.Run("File write error", func(t *testing.T) {
 		// Use invalid path to trigger error
 		invalidPath := "/invalid/directory/that/does/not/exist/state.json"
@@ -558,6 +596,42 @@ func TestLoadStateFromFile(t *testing.T) {
 			t.Error("Expected empty cache after loading empty file")
 		}
 	})
+}
+
+func TestReconcileStateFromFile(t *testing.T) {
+	tmpFile := t.TempDir() + "/state.json"
+	now := time.Now().UnixNano()
+	futureExpiration := now + int64(1*time.Hour)
+
+	fileState := State{
+		Rate: map[string]CacheEntry{
+			"192.168.0.0": {Value: uint(10), Expiration: futureExpiration},
+		},
+		Bots:     map[string]CacheEntry{},
+		Verified: map[string]CacheEntry{},
+		Memory:   map[string]uintptr{"rate": 8, "bot": 8, "verified": 8},
+	}
+	data, _ := json.Marshal(fileState)
+	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+		t.Fatalf("Failed to write test state: %v", err)
+	}
+
+	rateCache := lru.New(1*time.Hour, 1*time.Minute)
+	botCache := lru.New(1*time.Hour, 1*time.Minute)
+	verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
+
+	rateCache.Set("10.0.0.0", uint(5), lru.DefaultExpiration)
+
+	if err := ReconcileStateFromFile(tmpFile, rateCache, botCache, verifiedCache); err != nil {
+		t.Fatalf("ReconcileStateFromFile failed: %v", err)
+	}
+
+	if v, ok := rateCache.Get("192.168.0.0"); !ok || v.(uint) != 10 {
+		t.Error("Expected file state to be reconciled into memory")
+	}
+	if v, ok := rateCache.Get("10.0.0.0"); !ok || v.(uint) != 5 {
+		t.Error("Expected existing memory state to be retained")
+	}
 }
 
 func testLogger() *slog.Logger {

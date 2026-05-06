@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"reflect"
 	"time"
 
@@ -22,6 +23,18 @@ type State struct {
 	Bots     map[string]CacheEntry `json:"bots"`
 	Verified map[string]CacheEntry `json:"verified"`
 	Memory   map[string]uintptr    `json:"memory"`
+}
+
+type SaveMetrics struct {
+	LockMs          int64
+	ReadMs          int64
+	ReconcileMs     int64
+	MarshalMs       int64
+	WriteMs         int64
+	TotalMs         int64
+	RateEntries     int
+	BotEntries      int
+	VerifiedEntries int
 }
 
 func GetState(rateCache, botCache, verifiedCache map[string]lru.Item) State {
@@ -67,26 +80,35 @@ func SaveStateToFile(
 	rateCache, botCache, verifiedCache *lru.Cache,
 	log *slog.Logger,
 ) (lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs int64, err error) {
+	metrics, err := SaveStateToFileWithMetrics(filePath, reconcile, rateCache, botCache, verifiedCache, log)
+	return metrics.LockMs, metrics.ReadMs, metrics.ReconcileMs, metrics.MarshalMs, metrics.WriteMs, metrics.TotalMs, err
+}
+
+func SaveStateToFileWithMetrics(
+	filePath string,
+	reconcile bool,
+	rateCache, botCache, verifiedCache *lru.Cache,
+	log *slog.Logger,
+) (SaveMetrics, error) {
 	startTime := time.Now()
+	metrics := SaveMetrics{}
 
 	lock, err := NewFileLock(filePath + ".lock")
 	if err != nil {
-		return 0, 0, 0, 0, 0, 0, fmt.Errorf("failed to create lock: %w", err)
+		return metrics, fmt.Errorf("failed to create lock: %w", err)
 	}
 	defer lock.Close()
 
 	if err := lock.Lock(); err != nil {
-		return 0, 0, 0, 0, 0, 0, fmt.Errorf("failed to acquire lock: %w", err)
+		return metrics, fmt.Errorf("failed to acquire lock: %w", err)
 	}
-	lockDuration := time.Since(startTime)
-
-	var readDuration, reconcileDuration, marshalDuration, writeDuration time.Duration
+	metrics.LockMs = time.Since(startTime).Milliseconds()
 
 	// Reconcile with existing file state if enabled
 	if reconcile {
 		readStart := time.Now()
 		fileContent, readErr := os.ReadFile(filePath)
-		readDuration = time.Since(readStart)
+		metrics.ReadMs = time.Since(readStart).Milliseconds()
 
 		if readErr == nil && len(fileContent) > 0 {
 			reconcileStart := time.Now()
@@ -95,7 +117,7 @@ func SaveStateToFile(
 				log.Debug("Reconciling state before save", "fileBytes", len(fileContent))
 				ReconcileState(fileState, rateCache, botCache, verifiedCache)
 			}
-			reconcileDuration = time.Since(reconcileStart)
+			metrics.ReconcileMs = time.Since(reconcileStart).Milliseconds()
 		}
 	}
 
@@ -103,29 +125,50 @@ func SaveStateToFile(
 	marshalStart := time.Now()
 	currentState := GetState(rateCache.Items(), botCache.Items(), verifiedCache.Items())
 	jsonData, err := json.Marshal(currentState)
-	marshalDuration = time.Since(marshalStart)
+	metrics.MarshalMs = time.Since(marshalStart).Milliseconds()
+	metrics.RateEntries = len(currentState.Rate)
+	metrics.BotEntries = len(currentState.Bots)
+	metrics.VerifiedEntries = len(currentState.Verified)
 
 	if err != nil {
-		return lockDuration.Milliseconds(), readDuration.Milliseconds(),
-			reconcileDuration.Milliseconds(), marshalDuration.Milliseconds(),
-			0, 0, err
+		return metrics, err
 	}
 
 	// Write to disk
 	writeStart := time.Now()
-	err = os.WriteFile(filePath, jsonData, 0644)
-	writeDuration = time.Since(writeStart)
+	err = atomicWriteFile(filePath, jsonData, 0644)
+	metrics.WriteMs = time.Since(writeStart).Milliseconds()
 
 	if err != nil {
-		return lockDuration.Milliseconds(), readDuration.Milliseconds(),
-			reconcileDuration.Milliseconds(), marshalDuration.Milliseconds(),
-			writeDuration.Milliseconds(), 0, err
+		return metrics, err
 	}
 
-	totalDuration := time.Since(startTime)
-	return lockDuration.Milliseconds(), readDuration.Milliseconds(),
-		reconcileDuration.Milliseconds(), marshalDuration.Milliseconds(),
-		writeDuration.Milliseconds(), totalDuration.Milliseconds(), nil
+	metrics.TotalMs = time.Since(startTime).Milliseconds()
+	return metrics, nil
+}
+
+func atomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(filePath)
+	tmp, err := os.CreateTemp(dir, filepath.Base(filePath)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpName, filePath)
 }
 
 // LoadStateFromFile loads state from a file with locking.
@@ -157,6 +200,34 @@ func LoadStateFromFile(
 	// Use SetState which properly handles expiration times
 	SetState(loadedState, rateCache, botCache, verifiedCache)
 
+	return nil
+}
+
+func ReconcileStateFromFile(
+	filePath string,
+	rateCache, botCache, verifiedCache *lru.Cache,
+) error {
+	lock, err := NewFileLock(filePath + ".lock")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
+	if err := lock.Lock(); err != nil {
+		return err
+	}
+
+	fileContent, err := os.ReadFile(filePath)
+	if err != nil || len(fileContent) == 0 {
+		return err
+	}
+
+	var fileState State
+	if err := json.Unmarshal(fileContent, &fileState); err != nil {
+		return err
+	}
+
+	ReconcileState(fileState, rateCache, botCache, verifiedCache)
 	return nil
 }
 
