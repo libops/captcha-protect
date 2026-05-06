@@ -2,6 +2,7 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,19 @@ import (
 	"testing"
 	"time"
 )
+
+type fakeLockPIDFile struct {
+	writeErr error
+	closeErr error
+}
+
+func (f fakeLockPIDFile) WriteString(string) (int, error) {
+	return 0, f.writeErr
+}
+
+func (f fakeLockPIDFile) Close() error {
+	return f.closeErr
+}
 
 // TestFileLock_LockUnlock tests the basic Lock and Unlock functionality.
 func TestFileLock_LockUnlock(t *testing.T) {
@@ -50,6 +64,46 @@ func TestFileLock_LockUnlock(t *testing.T) {
 
 	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
 		t.Fatal("lock file was not removed after Unlock()")
+	}
+}
+
+func TestWriteLockPIDErrorsCleanUpLockFile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		file    fakeLockPIDFile
+		wantErr string
+	}{
+		{
+			name:    "write error",
+			file:    fakeLockPIDFile{writeErr: errors.New("write failed")},
+			wantErr: "failed to write pid to lock file: write failed",
+		},
+		{
+			name:    "close error",
+			file:    fakeLockPIDFile{closeErr: errors.New("close failed")},
+			wantErr: "failed to close lock file: close failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			lockPath := filepath.Join(t.TempDir(), "test.lock")
+			if err := os.WriteFile(lockPath, []byte("partial"), 0600); err != nil {
+				t.Fatalf("failed to create lock file: %v", err)
+			}
+
+			err := writeLockPID(tt.file, lockPath, os.Getpid())
+			if err == nil || err.Error() != tt.wantErr {
+				t.Fatalf("writeLockPID error = %v, want %q", err, tt.wantErr)
+			}
+			if _, statErr := os.Stat(lockPath); !os.IsNotExist(statErr) {
+				t.Fatalf("expected failed writeLockPID to remove lock file, stat err = %v", statErr)
+			}
+		})
 	}
 }
 

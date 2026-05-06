@@ -1,12 +1,14 @@
 package state
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"time"
 
 	lru "github.com/patrickmn/go-cache"
@@ -23,6 +25,30 @@ type State struct {
 	Bots     map[string]CacheEntry `json:"bots"`
 	Verified map[string]CacheEntry `json:"verified"`
 	Memory   map[string]uintptr    `json:"memory"`
+}
+
+type persistentEntry[T any] struct {
+	Value      T     `json:"value"`
+	Expiration int64 `json:"expiration"`
+}
+
+type persistentState struct {
+	Rate     map[string]persistentEntry[uint] `json:"rate"`
+	Bots     map[string]persistentEntry[bool] `json:"bots"`
+	Verified map[string]persistentEntry[bool] `json:"verified"`
+	Memory   map[string]uintptr               `json:"memory"`
+}
+
+type ignoredJSON struct{}
+
+func (ignoredJSON) UnmarshalJSON(_ []byte) error {
+	return nil
+}
+
+type reconcileStateFile struct {
+	Rate     map[string]persistentEntry[uint] `json:"rate"`
+	Bots     ignoredJSON                      `json:"bots"` // Bot cache is derived and too large to merge on every state save.
+	Verified map[string]persistentEntry[bool] `json:"verified"`
 }
 
 type SaveMetrics struct {
@@ -112,32 +138,27 @@ func SaveStateToFileWithMetrics(
 
 		if readErr == nil && len(fileContent) > 0 {
 			reconcileStart := time.Now()
-			var fileState State
+			var fileState reconcileStateFile
 			if unmarshalErr := json.Unmarshal(fileContent, &fileState); unmarshalErr == nil {
 				log.Debug("Reconciling state before save", "fileBytes", len(fileContent))
-				ReconcileState(fileState, rateCache, botCache, verifiedCache)
+				reconcilePersistentFileState(fileState, rateCache, verifiedCache)
 			}
 			metrics.ReconcileMs = time.Since(reconcileStart).Milliseconds()
 		}
 	}
 
-	// Marshal current state
+	// Bot cache entries are derived from DNS/IP checks and can dwarf the
+	// state that needs cross-instance sharing. Persist only rate limiter and
+	// verified-user state; existing files with bot entries still load.
+	rateItems := rateCache.Items()
+	verifiedItems := verifiedCache.Items()
+	metrics.RateEntries = len(rateItems)
+	metrics.BotEntries = 0
+	metrics.VerifiedEntries = len(verifiedItems)
+
 	marshalStart := time.Now()
-	currentState := GetState(rateCache.Items(), botCache.Items(), verifiedCache.Items())
-	jsonData, err := json.Marshal(currentState)
+	err = atomicWriteStateFile(filePath, rateItems, nil, verifiedItems, 0600)
 	metrics.MarshalMs = time.Since(marshalStart).Milliseconds()
-	metrics.RateEntries = len(currentState.Rate)
-	metrics.BotEntries = len(currentState.Bots)
-	metrics.VerifiedEntries = len(currentState.Verified)
-
-	if err != nil {
-		return metrics, err
-	}
-
-	// Write to disk. State can contain client IPs, so keep snapshots private.
-	writeStart := time.Now()
-	err = atomicWriteFile(filePath, jsonData, 0600)
-	metrics.WriteMs = time.Since(writeStart).Milliseconds()
 
 	if err != nil {
 		return metrics, err
@@ -147,7 +168,11 @@ func SaveStateToFileWithMetrics(
 	return metrics, nil
 }
 
-func atomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
+func atomicWriteStateFile(
+	filePath string,
+	rateItems, botItems, verifiedItems map[string]lru.Item,
+	perm os.FileMode,
+) error {
 	dir := filepath.Dir(filePath)
 	tmp, err := os.CreateTemp(dir, filepath.Base(filePath)+".tmp-*")
 	if err != nil {
@@ -156,7 +181,12 @@ func atomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 
-	if _, err := tmp.Write(data); err != nil {
+	writer := bufio.NewWriterSize(tmp, 1024*1024)
+	if err := writeStateJSON(writer, rateItems, botItems, verifiedItems); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := writer.Flush(); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -169,6 +199,125 @@ func atomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
 	}
 
 	return os.Rename(tmpName, filePath)
+}
+
+func writeStateJSON(
+	writer *bufio.Writer,
+	rateItems, botItems, verifiedItems map[string]lru.Item,
+) error {
+	if err := writeString(writer, `{"rate":`); err != nil {
+		return err
+	}
+	rateMemory, err := writeCacheEntryMap[uint](writer, rateItems, writeUint)
+	if err != nil {
+		return err
+	}
+	if err := writeString(writer, `,"bots":`); err != nil {
+		return err
+	}
+	botMemory, err := writeCacheEntryMap[bool](writer, botItems, writeBool)
+	if err != nil {
+		return err
+	}
+	if err := writeString(writer, `,"verified":`); err != nil {
+		return err
+	}
+	verifiedMemory, err := writeCacheEntryMap[bool](writer, verifiedItems, writeBool)
+	if err != nil {
+		return err
+	}
+
+	if err := writeString(writer, `,"memory":{"rate":`); err != nil {
+		return err
+	}
+	if err := writeString(writer, strconv.FormatUint(uint64(rateMemory), 10)); err != nil {
+		return err
+	}
+	if err := writeString(writer, `,"bot":`); err != nil {
+		return err
+	}
+	if err := writeString(writer, strconv.FormatUint(uint64(botMemory), 10)); err != nil {
+		return err
+	}
+	if err := writeString(writer, `,"verified":`); err != nil {
+		return err
+	}
+	if err := writeString(writer, strconv.FormatUint(uint64(verifiedMemory), 10)); err != nil {
+		return err
+	}
+	return writeString(writer, `}}`)
+}
+
+func writeCacheEntryMap[T any](
+	writer *bufio.Writer,
+	items map[string]lru.Item,
+	writeValue func(*bufio.Writer, T) error,
+) (uintptr, error) {
+	if err := writer.WriteByte('{'); err != nil {
+		return 0, err
+	}
+
+	memoryUsage := reflect.TypeOf(map[string]CacheEntry{}).Size()
+	first := true
+	quotedKey := make([]byte, 0, 64)
+	for key, item := range items {
+		value, ok := item.Object.(T)
+		if !ok {
+			return memoryUsage, fmt.Errorf("unexpected cache value type for %q", key)
+		}
+
+		if !first {
+			if err := writer.WriteByte(','); err != nil {
+				return memoryUsage, err
+			}
+		}
+		first = false
+
+		quotedKey = strconv.AppendQuote(quotedKey[:0], key)
+		if _, err := writer.Write(quotedKey); err != nil {
+			return memoryUsage, err
+		}
+		if err := writeString(writer, `:{"value":`); err != nil {
+			return memoryUsage, err
+		}
+		if err := writeValue(writer, value); err != nil {
+			return memoryUsage, err
+		}
+		if err := writeString(writer, `,"expiration":`); err != nil {
+			return memoryUsage, err
+		}
+		if err := writeString(writer, strconv.FormatInt(item.Expiration, 10)); err != nil {
+			return memoryUsage, err
+		}
+		if err := writer.WriteByte('}'); err != nil {
+			return memoryUsage, err
+		}
+
+		memoryUsage += reflect.TypeOf(key).Size()
+		memoryUsage += reflect.TypeOf(item).Size()
+		memoryUsage += uintptr(len(key))
+	}
+
+	if err := writer.WriteByte('}'); err != nil {
+		return memoryUsage, err
+	}
+	return memoryUsage, nil
+}
+
+func writeUint(writer *bufio.Writer, value uint) error {
+	return writeString(writer, strconv.FormatUint(uint64(value), 10))
+}
+
+func writeBool(writer *bufio.Writer, value bool) error {
+	if value {
+		return writeString(writer, "true")
+	}
+	return writeString(writer, "false")
+}
+
+func writeString(writer *bufio.Writer, value string) error {
+	_, err := writer.WriteString(value)
+	return err
 }
 
 // LoadStateFromFile loads state from a file with locking.
@@ -191,14 +340,14 @@ func LoadStateFromFile(
 		return err
 	}
 
-	var loadedState State
+	var loadedState persistentState
 	err = json.Unmarshal(fileContent, &loadedState)
 	if err != nil {
 		return err
 	}
 
 	// Use SetState which properly handles expiration times
-	SetState(loadedState, rateCache, botCache, verifiedCache)
+	setPersistentState(loadedState, rateCache, botCache, verifiedCache)
 
 	return nil
 }
@@ -222,12 +371,12 @@ func ReconcileStateFromFile(
 		return err
 	}
 
-	var fileState State
+	var fileState reconcileStateFile
 	if err := json.Unmarshal(fileContent, &fileState); err != nil {
 		return err
 	}
 
-	ReconcileState(fileState, rateCache, botCache, verifiedCache)
+	reconcilePersistentFileState(fileState, rateCache, verifiedCache)
 	return nil
 }
 
@@ -293,6 +442,83 @@ func loadCacheEntries[T any](
 		}
 		duration := calculateDuration(entry.Expiration, now)
 		cache.Set(k, value, duration)
+	}
+}
+
+func setPersistentState(state persistentState, rateCache, botCache, verifiedCache *lru.Cache) {
+	loadPersistentEntries(state.Rate, rateCache)
+	loadPersistentEntries(state.Bots, botCache)
+	loadPersistentEntries(state.Verified, verifiedCache)
+}
+
+func loadPersistentEntries[T any](entries map[string]persistentEntry[T], cache *lru.Cache) {
+	now := time.Now().UnixNano()
+	for key, entry := range entries {
+		if entry.Expiration > 0 && entry.Expiration <= now {
+			continue
+		}
+		cache.Set(key, entry.Value, calculateDuration(entry.Expiration, now))
+	}
+}
+
+func reconcilePersistentFileState(state reconcileStateFile, rateCache, verifiedCache *lru.Cache) {
+	rateItems := rateCache.Items()
+	verifiedItems := verifiedCache.Items()
+
+	reconcilePersistentRateCache(state.Rate, rateItems, rateCache)
+	reconcilePersistentCacheEntries(state.Verified, verifiedItems, verifiedCache)
+}
+
+func reconcilePersistentCacheEntries[T any](
+	fileEntries map[string]persistentEntry[T],
+	memItems map[string]lru.Item,
+	cache *lru.Cache,
+) {
+	now := time.Now().UnixNano()
+	for key, fileEntry := range fileEntries {
+		if fileEntry.Expiration > 0 && fileEntry.Expiration <= now {
+			continue
+		}
+
+		duration := calculateDuration(fileEntry.Expiration, now)
+		memItem, exists := memItems[key]
+		if !exists {
+			cache.Set(key, fileEntry.Value, duration)
+			continue
+		}
+
+		if fileEntry.Expiration > memItem.Expiration {
+			cache.Set(key, fileEntry.Value, duration)
+		}
+	}
+}
+
+func reconcilePersistentRateCache(
+	fileEntries map[string]persistentEntry[uint],
+	memItems map[string]lru.Item,
+	cache *lru.Cache,
+) {
+	now := time.Now().UnixNano()
+	for key, fileEntry := range fileEntries {
+		if fileEntry.Expiration > 0 && fileEntry.Expiration <= now {
+			continue
+		}
+
+		memItem, exists := memItems[key]
+		if !exists {
+			cache.Set(key, fileEntry.Value, calculateDuration(fileEntry.Expiration, now))
+			continue
+		}
+
+		memValue, ok := memItem.Object.(uint)
+		if !ok {
+			cache.Set(key, fileEntry.Value, calculateDuration(fileEntry.Expiration, now))
+			continue
+		}
+
+		combinedValue := maxUint(fileEntry.Value, memValue)
+		laterExpiration := max(fileEntry.Expiration, memItem.Expiration)
+		cache.Set(key, combinedValue, calculateDuration(laterExpiration, now))
 	}
 }
 

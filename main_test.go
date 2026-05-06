@@ -1065,6 +1065,83 @@ func TestRegisterRequestCapsPersistedRateCounter(t *testing.T) {
 	}
 }
 
+func TestSaveStateFlushesDirtyStateOnCanceledContext(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "state.json")
+	bc := newStateOnlyCaptchaProtect(tmpFile, 2)
+
+	bc.rateCache.Set("192.168.0.0", uint(1), time.Hour)
+	bc.markStateDirty()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	bc.saveState(ctx)
+
+	if bc.hasUnsavedState() {
+		t.Fatal("expected canceled saveState to flush dirty state before returning")
+	}
+
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("expected state file to be written: %v", err)
+	}
+
+	var saved struct {
+		Rate map[string]json.RawMessage `json:"rate"`
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("state file did not contain valid JSON: %v", err)
+	}
+	if _, ok := saved.Rate["192.168.0.0"]; !ok {
+		t.Fatal("expected dirty rate entry to be persisted")
+	}
+}
+
+func TestSaveStateNowReturnsFalseAndKeepsDirtyStateOnWriteError(t *testing.T) {
+	statePath := t.TempDir()
+	bc := newStateOnlyCaptchaProtect(statePath, 2)
+	bc.rateCache.Set("192.168.0.0", uint(1), time.Hour)
+	bc.markStateDirty()
+
+	if bc.saveStateNow() {
+		t.Fatal("expected saveStateNow to fail when persistent state path is a directory")
+	}
+	if !bc.hasUnsavedState() {
+		t.Fatal("expected failed save to keep state dirty")
+	}
+}
+
+func TestStateBookkeepingErrorBranches(t *testing.T) {
+	missingFile := filepath.Join(t.TempDir(), "missing", "state.json")
+	bc := newStateOnlyCaptchaProtect(missingFile, 2)
+
+	bc.stateDirty.Store(1)
+	bc.stateSavedDirty.Store(2)
+	if got := bc.unsavedStateChanges(); got != 0 {
+		t.Fatalf("unsavedStateChanges with saved counter ahead = %d, want 0", got)
+	}
+
+	bc.refreshStateFileModTime()
+	if !bc.stateFileModTime.IsZero() {
+		t.Fatal("refreshStateFileModTime should ignore missing state file")
+	}
+
+	bc.reconcileStateFromFileIfChanged()
+	if !bc.stateFileModTime.IsZero() {
+		t.Fatal("reconcileStateFromFileIfChanged should ignore missing state file")
+	}
+
+	invalidFile := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(invalidFile, []byte("{invalid json"), 0600); err != nil {
+		t.Fatalf("failed to write invalid state file: %v", err)
+	}
+	bc.config.PersistentStateFile = invalidFile
+	bc.reconcileStateFromFileIfChanged()
+	if !bc.stateFileModTime.IsZero() {
+		t.Fatal("failed reconciliation should not advance state file mod time")
+	}
+}
+
 func TestVerifyChallengePage(t *testing.T) {
 	tests := []struct {
 		name           string

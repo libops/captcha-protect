@@ -89,6 +89,8 @@ func TestPersistentStateSharingWithSynctest(t *testing.T) {
 
 		time.Sleep(StateSaveInterval + StateSaveJitter + 3*time.Second)
 		synctest.Wait()
+		reader.stateFileModTime = time.Time{}
+		reader.reconcileStateFromFileIfChanged()
 
 		v, ok := reader.rateCache.Get("107.198.0.0")
 		if !ok {

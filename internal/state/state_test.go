@@ -1,6 +1,8 @@
 package state
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -304,8 +306,8 @@ func TestSaveStateToFile(t *testing.T) {
 		if len(savedState.Rate) != 1 {
 			t.Errorf("Expected 1 rate entry, got %d", len(savedState.Rate))
 		}
-		if len(savedState.Bots) != 1 {
-			t.Errorf("Expected 1 bot entry, got %d", len(savedState.Bots))
+		if len(savedState.Bots) != 0 {
+			t.Errorf("Expected derived bot cache entries to be skipped, got %d", len(savedState.Bots))
 		}
 		if len(savedState.Verified) != 1 {
 			t.Errorf("Expected 1 verified entry, got %d", len(savedState.Verified))
@@ -411,8 +413,8 @@ func TestSaveStateToFile(t *testing.T) {
 		if metrics.RateEntries != 1 {
 			t.Errorf("Expected 1 rate entry, got %d", metrics.RateEntries)
 		}
-		if metrics.BotEntries != 1 {
-			t.Errorf("Expected 1 bot entry, got %d", metrics.BotEntries)
+		if metrics.BotEntries != 0 {
+			t.Errorf("Expected derived bot cache entries to be skipped, got %d", metrics.BotEntries)
 		}
 		if metrics.VerifiedEntries != 1 {
 			t.Errorf("Expected 1 verified entry, got %d", metrics.VerifiedEntries)
@@ -605,14 +607,21 @@ func TestReconcileStateFromFile(t *testing.T) {
 	tmpFile := t.TempDir() + "/state.json"
 	now := time.Now().UnixNano()
 	futureExpiration := now + int64(1*time.Hour)
+	laterExpiration := now + int64(2*time.Hour)
 
 	fileState := State{
 		Rate: map[string]CacheEntry{
 			"192.168.0.0": {Value: uint(10), Expiration: futureExpiration},
 		},
-		Bots:     map[string]CacheEntry{},
+		Bots: map[string]CacheEntry{
+			"1.2.3.4": {Value: true, Expiration: futureExpiration},
+		},
 		Verified: map[string]CacheEntry{},
 		Memory:   map[string]uintptr{"rate": 8, "bot": 8, "verified": 8},
+	}
+	fileState.Verified = map[string]CacheEntry{
+		"5.6.7.8": {Value: true, Expiration: futureExpiration},
+		"9.9.9.9": {Value: true, Expiration: futureExpiration},
 	}
 	data, _ := json.Marshal(fileState)
 	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
@@ -624,6 +633,7 @@ func TestReconcileStateFromFile(t *testing.T) {
 	verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
 	rateCache.Set("10.0.0.0", uint(5), lru.DefaultExpiration)
+	verifiedCache.Set("9.9.9.9", false, time.Duration(laterExpiration-now))
 
 	if err := ReconcileStateFromFile(tmpFile, rateCache, botCache, verifiedCache); err != nil {
 		t.Fatalf("ReconcileStateFromFile failed: %v", err)
@@ -635,6 +645,135 @@ func TestReconcileStateFromFile(t *testing.T) {
 	if v, ok := rateCache.Get("10.0.0.0"); !ok || v.(uint) != 5 {
 		t.Error("Expected existing memory state to be retained")
 	}
+	if botCache.ItemCount() != 0 {
+		t.Errorf("Expected derived bot cache entries to be skipped during reconciliation, got %d", botCache.ItemCount())
+	}
+	if v, ok := verifiedCache.Get("5.6.7.8"); !ok || v.(bool) != true {
+		t.Error("Expected file verified state to be reconciled into memory")
+	}
+	if v, ok := verifiedCache.Get("9.9.9.9"); !ok || v.(bool) != false {
+		t.Error("Expected newer memory verified state to be retained")
+	}
+}
+
+func TestSaveStateToFileWithMetricsWriteError(t *testing.T) {
+	statePath := t.TempDir()
+
+	rateCache := lru.New(1*time.Hour, 1*time.Minute)
+	botCache := lru.New(1*time.Hour, 1*time.Minute)
+	verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
+	rateCache.Set("192.168.0.0", uint(10), lru.DefaultExpiration)
+
+	metrics, err := SaveStateToFileWithMetrics(
+		statePath,
+		false,
+		rateCache,
+		botCache,
+		verifiedCache,
+		testLogger(),
+	)
+	if err == nil {
+		t.Fatal("expected write error when state path is a directory")
+	}
+	if metrics.RateEntries != 1 {
+		t.Fatalf("expected metrics to include marshaled rate entry, got %d", metrics.RateEntries)
+	}
+}
+
+func TestAtomicWriteStateFileCreateTempError(t *testing.T) {
+	missingDir := filepath.Join(t.TempDir(), "missing")
+	err := atomicWriteStateFile(filepath.Join(missingDir, "state.json"), nil, nil, nil, 0600)
+	if err == nil {
+		t.Fatal("expected atomicWriteStateFile to fail when temp directory is missing")
+	}
+}
+
+func TestWriteStateJSON(t *testing.T) {
+	rateCache := lru.New(1*time.Hour, 1*time.Minute)
+	botCache := lru.New(1*time.Hour, 1*time.Minute)
+	verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
+
+	rateCache.Set("192.168.0.0", uint(10), lru.DefaultExpiration)
+	botCache.Set("1.2.3.4", true, lru.DefaultExpiration)
+	botCache.Set("5.6.7.8", false, lru.DefaultExpiration)
+	verifiedCache.Set("9.9.9.9", true, lru.DefaultExpiration)
+
+	var buf bytes.Buffer
+	writer := bufio.NewWriter(&buf)
+	if err := writeStateJSON(writer, rateCache.Items(), botCache.Items(), verifiedCache.Items()); err != nil {
+		t.Fatalf("writeStateJSON failed: %v", err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	var saved State
+	if err := json.Unmarshal(buf.Bytes(), &saved); err != nil {
+		t.Fatalf("state JSON did not unmarshal: %v", err)
+	}
+	if len(saved.Rate) != 1 || len(saved.Bots) != 2 || len(saved.Verified) != 1 {
+		t.Fatalf("unexpected saved counts: rate=%d bots=%d verified=%d", len(saved.Rate), len(saved.Bots), len(saved.Verified))
+	}
+	if saved.Bots["1.2.3.4"].Value != true {
+		t.Fatal("expected true bot value to be written")
+	}
+	if saved.Bots["5.6.7.8"].Value != false {
+		t.Fatal("expected false bot value to be written")
+	}
+}
+
+func TestWriteStateJSONUnexpectedType(t *testing.T) {
+	var buf bytes.Buffer
+	writer := bufio.NewWriter(&buf)
+	err := writeStateJSON(
+		writer,
+		map[string]lru.Item{"bad": {Object: "not-a-uint", Expiration: time.Now().Add(time.Hour).UnixNano()}},
+		nil,
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected writeStateJSON to reject unexpected cache value type")
+	}
+}
+
+func TestReconcileStateFromFileEmptyAndInvalidFiles(t *testing.T) {
+	newCaches := func() (*lru.Cache, *lru.Cache, *lru.Cache) {
+		return lru.New(1*time.Hour, 1*time.Minute),
+			lru.New(1*time.Hour, 1*time.Minute),
+			lru.New(1*time.Hour, 1*time.Minute)
+	}
+
+	t.Run("missing file", func(t *testing.T) {
+		rateCache, botCache, verifiedCache := newCaches()
+		err := ReconcileStateFromFile(filepath.Join(t.TempDir(), "missing.json"), rateCache, botCache, verifiedCache)
+		if err == nil {
+			t.Fatal("expected missing state file to return read error")
+		}
+	})
+
+	t.Run("empty file", func(t *testing.T) {
+		tmpFile := filepath.Join(t.TempDir(), "state.json")
+		if err := os.WriteFile(tmpFile, nil, 0600); err != nil {
+			t.Fatalf("failed to write empty state file: %v", err)
+		}
+
+		rateCache, botCache, verifiedCache := newCaches()
+		if err := ReconcileStateFromFile(tmpFile, rateCache, botCache, verifiedCache); err != nil {
+			t.Fatalf("empty state file should be a no-op: %v", err)
+		}
+	})
+
+	t.Run("invalid JSON", func(t *testing.T) {
+		tmpFile := filepath.Join(t.TempDir(), "state.json")
+		if err := os.WriteFile(tmpFile, []byte("{invalid json"), 0600); err != nil {
+			t.Fatalf("failed to write invalid state file: %v", err)
+		}
+
+		rateCache, botCache, verifiedCache := newCaches()
+		if err := ReconcileStateFromFile(tmpFile, rateCache, botCache, verifiedCache); err == nil {
+			t.Fatal("expected invalid state file to return unmarshal error")
+		}
+	})
 }
 
 func testLogger() *slog.Logger {

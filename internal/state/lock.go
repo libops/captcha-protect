@@ -15,6 +15,11 @@ type FileLock struct {
 	pid      int
 }
 
+type lockPIDFile interface {
+	WriteString(string) (int, error)
+	Close() error
+}
+
 // NewFileLock creates a new file lock for the given path.
 // It uses a separate .lock file to coordinate access.
 func NewFileLock(path string) (*FileLock, error) {
@@ -36,17 +41,8 @@ func (fl *FileLock) Lock() error {
 		f, err := os.OpenFile(fl.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err == nil {
 			// Successfully created lock file
-			_, writeErr := f.WriteString(strconv.Itoa(fl.pid))
-			closeErr := f.Close()
-			if writeErr != nil {
-				// We got the lock but failed to write.
-				// Best effort to clean up, then return the error.
-				_ = os.Remove(fl.lockPath)
-				return fmt.Errorf("failed to write pid to lock file: %v", writeErr)
-			}
-			if closeErr != nil {
-				_ = os.Remove(fl.lockPath)
-				return fmt.Errorf("failed to close lock file: %v", closeErr)
+			if err := writeLockPID(f, fl.lockPath, fl.pid); err != nil {
+				return err
 			}
 			// We hold the lock
 			return nil
@@ -80,6 +76,22 @@ func (fl *FileLock) Lock() error {
 			// Continue to next iteration
 		}
 	}
+}
+
+func writeLockPID(file lockPIDFile, lockPath string, pid int) error {
+	_, writeErr := file.WriteString(strconv.Itoa(pid))
+	closeErr := file.Close()
+	if writeErr != nil {
+		// We got the lock but failed to write.
+		// Best effort to clean up, then return the error.
+		_ = os.Remove(lockPath)
+		return fmt.Errorf("failed to write pid to lock file: %v", writeErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(lockPath)
+		return fmt.Errorf("failed to close lock file: %v", closeErr)
+	}
+	return nil
 }
 
 // Unlock releases the exclusive lock by removing the lock file

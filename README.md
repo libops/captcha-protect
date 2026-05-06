@@ -136,7 +136,7 @@ services:
 | `challengeStatusCode`   | `int`                   | `200`                    | HTTP Response status code to return when serving a challenge                                                                                                                                     |
 | `enableStatsPage`       | `string`                | `"false"`                | Allows `exemptIps` to access `/captcha-protect/stats` to monitor the rate limiter.                                                                                                               |
 | `logLevel`              | `string`                | `"INFO"`                 | Log level for the middleware. Options: `ERROR`, `WARNING`, `INFO`, or `DEBUG`.                                                                                                                   |
-| `persistentStateFile`   | `string`                | `""`                     | File path to persist rate limiter state across Traefik restarts. In Docker, mount this file from the host.                                                                                       |
+| `persistentStateFile`   | `string`                | `""`                     | File path to persist rate limiter and verified challenge state across Traefik restarts. Derived bot lookup cache entries are not persisted. In Docker, mount this file from the host.             |
 | `enableStateReconciliation` | `string`            | `"false"`                | When `"true"`, polls the shared state file for changes and merges newer disk state into memory, then reconciles again before dirty snapshots are saved. Enable for multi-instance deployments sharing state. |
 
 ### Circuit Breaker (failover if a captcha provider is unavailable)
@@ -272,7 +272,7 @@ If you have use a computer within the `exemptIps`, and access to the command lin
 curl -s https://example.com/captcha-protect/stats |   jq -r '.rate | to_entries | sort_by(.value) | .[] | "\(.key): \(.value)"' |   tail -25
 ```
 
-This JSON state data is also found in the `state.json` file that you should have configured in your `docker-compose.yml` using the `persistentStateFile` setting and volume definition. NOTE: this file should only be changed by `captcha-protect` and not manually.
+The rate limiter and verified challenge portions of this JSON state data are also found in the `state.json` file that you should have configured in your `docker-compose.yml` using the `persistentStateFile` setting and volume definition. NOTE: this file should only be changed by `captcha-protect` and not manually.
 
 ## Troubleshooting
 
