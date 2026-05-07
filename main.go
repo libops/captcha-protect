@@ -28,8 +28,10 @@ import (
 )
 
 const (
-	// StateSaveInterval is how often the persistent state file is written to disk
-	StateSaveInterval = 10 * time.Second
+	// StateSaveInterval is how often local persistent state is written to disk.
+	StateSaveInterval = 60 * time.Second
+	// StateReconciliationSaveInterval is the faster save cadence used when multiple instances share state.
+	StateReconciliationSaveInterval = 10 * time.Second
 	// StateSaveJitter is the maximum random jitter added to save interval to prevent thundering herd
 	StateSaveJitter = 2 * time.Second
 
@@ -1038,9 +1040,10 @@ func (c *Config) ParseHttpMethods(log *slog.Logger) {
 func (bc *CaptchaProtect) saveState(ctx context.Context) {
 	// Add random jitter to prevent multiple instances from trying to save simultaneously
 	jitter := stateSaveJitter()
-	interval := StateSaveInterval + jitter
+	baseInterval := stateSaveInterval(bc.config)
+	interval := baseInterval + jitter
 
-	bc.log.Debug("State save configured", "baseInterval", StateSaveInterval, "jitter", jitter, "actualInterval", interval)
+	bc.log.Debug("State save configured", "baseInterval", baseInterval, "jitter", jitter, "actualInterval", interval)
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -1087,6 +1090,13 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func stateSaveInterval(config *Config) time.Duration {
+	if config.EnableStateReconciliation == "true" {
+		return StateReconciliationSaveInterval
+	}
+	return StateSaveInterval
 }
 
 func stateSaveJitter() time.Duration {

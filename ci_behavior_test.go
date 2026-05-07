@@ -83,7 +83,7 @@ func TestPersistentStateSharingWithSynctest(t *testing.T) {
 			writer.registerRequest("107.198.0.0")
 		}
 
-		time.Sleep(StateSaveInterval + StateSaveJitter + 3*time.Second)
+		time.Sleep(stateSaveInterval(writer.config) + StateSaveJitter + 3*time.Second)
 		synctest.Wait()
 		reader.reconcileStateFromFileIfChanged()
 

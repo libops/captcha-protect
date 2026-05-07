@@ -1075,6 +1075,18 @@ func TestStatePersistenceDisabledWithoutStateFile(t *testing.T) {
 	}
 }
 
+func TestStateSaveIntervalUsesFastCadenceOnlyWithReconciliation(t *testing.T) {
+	config := CreateConfig()
+	if got := stateSaveInterval(config); got != 60*time.Second {
+		t.Fatalf("default state save interval = %s, want 60s", got)
+	}
+
+	config.EnableStateReconciliation = "true"
+	if got := stateSaveInterval(config); got != 10*time.Second {
+		t.Fatalf("reconciliation state save interval = %s, want 10s", got)
+	}
+}
+
 func TestSaveStateFlushesDirtyStateOnCanceledContext(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "state.json")
 	bc := newStateOnlyCaptchaProtect(tmpFile, 2)
