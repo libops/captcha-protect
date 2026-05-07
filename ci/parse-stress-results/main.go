@@ -32,17 +32,17 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	// Patterns to extract data
-	sizePattern := regexp.MustCompile(`size: ([\d.]+) MB`)
+	sizePattern := regexp.MustCompile(`size: ([\d.]+) (KB|MB)`)
 	timePattern := regexp.MustCompile(`took (\d+)ms`)
 
 	results := make(map[string]*TestResult)
 	currentTest := ""
 
 	// Initialize known tests
-	results["Small"] = &TestResult{Name: "Small", Entries: "16 rate / 65K bots / 256 verified", Threshold: 500}
-	results["Medium"] = &TestResult{Name: "Medium", Entries: "256 rate / 262K bots / 65K verified", Threshold: 1000}
-	results["Large"] = &TestResult{Name: "Large", Entries: "1K rate / 1M bots / 262K verified", Threshold: 3000}
-	results["XLarge"] = &TestResult{Name: "XLarge", Entries: "4K rate / 4.2M bots / 1M verified", Threshold: 10000}
+	results["Small"] = &TestResult{Name: "Small", Entries: "16 rate / 256 verified", Threshold: 500}
+	results["Medium"] = &TestResult{Name: "Medium", Entries: "256 rate / 65K verified", Threshold: 1000}
+	results["Large"] = &TestResult{Name: "Large", Entries: "1K rate / 262K verified", Threshold: 3000}
+	results["XLarge"] = &TestResult{Name: "XLarge", Entries: "4K rate / 1M verified", Threshold: 10000}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -65,9 +65,9 @@ func main() {
 
 		// Extract size from Marshal test
 		if event.Output != "" && strings.Contains(event.Output, "Marshal took") && strings.Contains(event.Output, "size:") {
-			if matches := sizePattern.FindStringSubmatch(event.Output); len(matches) > 1 {
+			if matches := sizePattern.FindStringSubmatch(event.Output); len(matches) > 2 {
 				if currentTest != "" && results[currentTest] != nil {
-					results[currentTest].Size = matches[1] + " MB"
+					results[currentTest].Size = matches[1] + " " + matches[2]
 				}
 			}
 		}

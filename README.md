@@ -90,7 +90,7 @@ services:
             --providers.docker=true
             --providers.docker.network=default
             --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
-            --experimental.plugins.captcha-protect.version=v1.12.2
+            --experimental.plugins.captcha-protect.version=v1.12.3
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
@@ -122,7 +122,7 @@ services:
 | `window`                | `int`                   | `86400`                  | Duration (in seconds) for monitoring requests per subnet.                                                                                                                                        |
 | `ipv4subnetMask`        | `int`                   | `16`                     | CIDR subnet mask to group IPv4 addresses for rate limiting.                                                                                                                                      |
 | `ipv6subnetMask`        | `int`                   | `64`                     | CIDR subnet mask to group IPv6 addresses for rate limiting.                                                                                                                                      |
-| `ipForwardedHeader`     | `string`                | `""`                     | Header to check for the original client IP if Traefik is behind a load balancer.                                                                                                                 |
+| `ipForwardedHeader`     | `string`                | `""`                     | Header to check for the original client IP if Traefik is behind a load balancer. Only set this when Traefik receives the header from a trusted proxy/load balancer; otherwise clients can spoof their IP. |
 | `ipDepth`               | `int`                   | `0`                      | How deep past the last non-exempt IP to fetch the real IP from `ipForwardedHeader`. Default 0 returns the last IP in the forward header                                                          |
 | `goodBots`              | `[]string` (encouraged) | *see below*              | List of second-level domains for bots that are never challenged or rate-limited.                                                                                                                 |
 | `enableGooglebotIPCheck`| `string`.               | `"false"`                | Treat IPs coming from googlebot's known IP ranges as good bots                                                                                                                                   |
@@ -136,8 +136,8 @@ services:
 | `challengeStatusCode`   | `int`                   | `200`                    | HTTP Response status code to return when serving a challenge                                                                                                                                     |
 | `enableStatsPage`       | `string`                | `"false"`                | Allows `exemptIps` to access `/captcha-protect/stats` to monitor the rate limiter.                                                                                                               |
 | `logLevel`              | `string`                | `"INFO"`                 | Log level for the middleware. Options: `ERROR`, `WARNING`, `INFO`, or `DEBUG`.                                                                                                                   |
-| `persistentStateFile`   | `string`                | `""`                     | File path to persist rate limiter state across Traefik restarts. In Docker, mount this file from the host.                                                                                       |
-| `enableStateReconciliation` | `string`            | `"false"`                | When `"true"`, reads and merges disk state before each save to prevent multiple instances from overwriting data. Adds extra I/O overhead. Only enable for multi-instance deployments sharing state. **Performance warning**: Not recommended for sites with >1M unique visitors due to reconciliation overhead (5-8s per cycle at scale). |
+| `persistentStateFile`   | `string`                | `""`                     | File path to persist rate limiter and verified challenge state across Traefik restarts. When unset, no state load/save goroutine is started. Dirty local state is saved about every 60s plus 0-2s jitter. Derived bot lookup cache entries are not persisted. In Docker, mount this file from the host. |
+| `enableStateReconciliation` | `string`            | `"false"`                | When `"true"`, polls the shared state file for changes and merges newer disk state into memory, then reconciles again before dirty snapshots are saved. Enable for multi-instance deployments sharing state. Dirty shared state is saved about every 10s plus 0-2s jitter. |
 
 ### Circuit Breaker (failover if a captcha provider is unavailable)
 
@@ -272,7 +272,7 @@ If you have use a computer within the `exemptIps`, and access to the command lin
 curl -s https://example.com/captcha-protect/stats |   jq -r '.rate | to_entries | sort_by(.value) | .[] | "\(.key): \(.value)"' |   tail -25
 ```
 
-This JSON state data is also found in the `state.json` file that you should have configured in your `docker-compose.yml` using the `persistentStateFile` setting and volume definition. NOTE: this file should only be changed by `captcha-protect` and not manually.
+The rate limiter and verified challenge portions of this JSON state data are also found in the `state.json` file that you should have configured in your `docker-compose.yml` using the `persistentStateFile` setting and volume definition. When `enableStateReconciliation` is `"false"`, dirty state is saved roughly every 60 seconds plus 0-2 seconds of jitter. When `enableStateReconciliation` is `"true"` for multi-instance shared state, dirty state is saved roughly every 10 seconds plus 0-2 seconds of jitter. If `persistentStateFile` is unset, state persistence is disabled. NOTE: this file should only be changed by `captcha-protect` and not manually.
 
 ## Troubleshooting
 

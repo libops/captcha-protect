@@ -706,6 +706,22 @@ func TestNewCaptchaProtectValidation(t *testing.T) {
 	}
 }
 
+func TestRedactedConfigDoesNotExposeSecretKey(t *testing.T) {
+	config := CreateConfig()
+	config.SecretKey = "super-secret"
+
+	redacted := redactedConfig(config)
+	if redacted.SecretKey == config.SecretKey {
+		t.Fatal("expected secret key to be redacted")
+	}
+	if redacted.SecretKey != "[REDACTED]" {
+		t.Fatalf("unexpected redacted secret value %q", redacted.SecretKey)
+	}
+	if config.SecretKey != "super-secret" {
+		t.Fatal("redactedConfig mutated the original config")
+	}
+}
+
 func TestRateLimiting(t *testing.T) {
 	config := CreateConfig()
 	config.SiteKey = "test"
@@ -974,15 +990,6 @@ func TestStatePersistence(t *testing.T) {
 	config.SiteKey = "test"
 	config.SecretKey = "test"
 	config.ProtectRoutes = []string{"/"}
-	config.PersistentStateFile = tmpFile
-
-	// Don't pass a context to avoid starting background goroutines
-	bc1, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
-
-	// Add some state
-	bc1.rateCache.Set("192.168.0.0", uint(10), 1*time.Hour)
-	bc1.verifiedCache.Set("1.2.3.4", true, 1*time.Hour)
-	bc1.botCache.Set("5.6.7.8", false, 1*time.Hour)
 
 	// Manually save state by writing the file directly
 	// This tests the state format without relying on the background goroutine
@@ -1001,12 +1008,6 @@ func TestStatePersistence(t *testing.T) {
 				"expiration": float64(futureExpiration),
 			},
 		},
-		"bots": map[string]map[string]interface{}{
-			"5.6.7.8": {
-				"value":      false,
-				"expiration": float64(futureExpiration),
-			},
-		},
 	})
 	err := os.WriteFile(tmpFile, jsonData, 0644)
 	if err != nil {
@@ -1015,6 +1016,7 @@ func TestStatePersistence(t *testing.T) {
 
 	// Create new instance - should load state
 	bc2, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+	bc2.loadStateFrom(tmpFile)
 
 	// Check rate cache
 	val, found := bc2.rateCache.Get("192.168.0.0")
@@ -1028,10 +1030,139 @@ func TestStatePersistence(t *testing.T) {
 		t.Error("Verified cache state not persisted correctly")
 	}
 
-	// Check bot cache
-	botVal, found := bc2.botCache.Get("5.6.7.8")
-	if !found || botVal.(bool) != false {
-		t.Error("Bot cache state not persisted correctly")
+}
+
+func TestRegisterRequestStopsIncrementingAfterRateLimitTrips(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "state.json")
+
+	bc := newStateOnlyCaptchaProtect(tmpFile, 2)
+
+	for i := 0; i < 5; i++ {
+		bc.registerRequest("192.168.0.0")
+	}
+
+	v, ok := bc.rateCache.Get("192.168.0.0")
+	if !ok {
+		t.Fatal("Expected rate cache entry")
+	}
+	if got, want := v.(uint), bc.config.RateLimit+1; got != want {
+		t.Fatalf("Expected sequential requests to stop incrementing at %d, got %d", want, got)
+	}
+	if got, want := bc.currentStateDirty(), uint64(bc.config.RateLimit+1); got != want {
+		t.Fatalf("Expected dirty counter to track only effective mutations, got %d want %d", got, want)
+	}
+}
+
+func TestStatePersistenceDisabledWithoutStateFile(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+
+	bc, err := NewCaptchaProtect(context.Background(), nil, config, "test")
+	if err != nil {
+		t.Fatalf("NewCaptchaProtect failed: %v", err)
+	}
+
+	bc.registerRequest("192.168.0.0")
+	bc.markStateDirty()
+
+	if bc.currentStateDirty() != 0 {
+		t.Fatal("state dirty counter should remain disabled without a persistent state file")
+	}
+	if bc.hasUnsavedState() {
+		t.Fatal("state should not become unsaved without a persistent state file")
+	}
+}
+
+func TestStateSaveIntervalUsesFastCadenceOnlyWithReconciliation(t *testing.T) {
+	config := CreateConfig()
+	if got := stateSaveInterval(config); got != 60*time.Second {
+		t.Fatalf("default state save interval = %s, want 60s", got)
+	}
+
+	config.EnableStateReconciliation = "true"
+	if got := stateSaveInterval(config); got != 10*time.Second {
+		t.Fatalf("reconciliation state save interval = %s, want 10s", got)
+	}
+}
+
+func TestSaveStateFlushesDirtyStateOnCanceledContext(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "state.json")
+	bc := newStateOnlyCaptchaProtect(tmpFile, 2)
+
+	bc.rateCache.Set("192.168.0.0", uint(1), time.Hour)
+	bc.markStateDirty()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	bc.saveState(ctx)
+
+	if bc.hasUnsavedState() {
+		t.Fatal("expected canceled saveState to flush dirty state before returning")
+	}
+
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("expected state file to be written: %v", err)
+	}
+
+	var saved struct {
+		Rate map[string]json.RawMessage `json:"rate"`
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("state file did not contain valid JSON: %v", err)
+	}
+	if _, ok := saved.Rate["192.168.0.0"]; !ok {
+		t.Fatal("expected dirty rate entry to be persisted")
+	}
+}
+
+func TestSaveStateNowReturnsFalseAndKeepsDirtyStateOnWriteError(t *testing.T) {
+	statePath := t.TempDir()
+	bc := newStateOnlyCaptchaProtect(statePath, 2)
+	bc.rateCache.Set("192.168.0.0", uint(1), time.Hour)
+	bc.markStateDirty()
+
+	if bc.saveStateNow() {
+		t.Fatal("expected saveStateNow to fail when persistent state path is a directory")
+	}
+	if !bc.hasUnsavedState() {
+		t.Fatal("expected failed save to keep state dirty")
+	}
+}
+
+func TestStateBookkeepingErrorBranches(t *testing.T) {
+	missingFile := filepath.Join(t.TempDir(), "missing", "state.json")
+	bc := newStateOnlyCaptchaProtect(missingFile, 2)
+
+	bc.stateMu.Lock()
+	bc.stateDirty = 1
+	bc.stateSavedDirty = 2
+	bc.stateMu.Unlock()
+	if got := bc.unsavedStateChanges(); got != 0 {
+		t.Fatalf("unsavedStateChanges with saved counter ahead = %d, want 0", got)
+	}
+
+	bc.refreshStateFileModTime()
+	if !bc.stateFileModTime.IsZero() {
+		t.Fatal("refreshStateFileModTime should ignore missing state file")
+	}
+
+	bc.reconcileStateFromFileIfChanged()
+	if !bc.stateFileModTime.IsZero() {
+		t.Fatal("reconcileStateFromFileIfChanged should ignore missing state file")
+	}
+
+	invalidFile := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(invalidFile, []byte("{invalid json"), 0600); err != nil {
+		t.Fatalf("failed to write invalid state file: %v", err)
+	}
+	invalidBC := newStateOnlyCaptchaProtect(invalidFile, 2)
+	invalidBC.reconcileStateFromFileIfChanged()
+	if !invalidBC.stateFileModTime.IsZero() {
+		t.Fatal("failed reconciliation should not advance state file mod time")
 	}
 }
 
@@ -1228,13 +1359,13 @@ func TestLoadStateInvalidJSON(t *testing.T) {
 	config.SiteKey = "test"
 	config.SecretKey = "test"
 	config.ProtectRoutes = []string{"/"}
-	config.PersistentStateFile = tmpFile
 
 	// Should not panic, just log error
 	bc, err := NewCaptchaProtect(context.Background(), nil, config, "test")
 	if err != nil {
 		t.Errorf("Should not fail on invalid state JSON: %v", err)
 	}
+	bc.loadStateFrom(tmpFile)
 
 	// Caches should be empty
 	if bc.rateCache.ItemCount() != 0 {
@@ -1243,6 +1374,7 @@ func TestLoadStateInvalidJSON(t *testing.T) {
 
 	// Clean up the file before temp dir cleanup
 	_ = os.Remove(tmpFile)
+	_ = os.Remove(tmpFile + ".lock")
 }
 
 func TestParseHttpMethodsInvalid(t *testing.T) {
