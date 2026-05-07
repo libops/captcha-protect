@@ -237,7 +237,7 @@ func TestReconcileState(t *testing.T) {
 	}
 }
 
-func TestSaveStateToFile(t *testing.T) {
+func TestSaveStateToFileWithMetrics(t *testing.T) {
 	t.Run("Basic save without reconciliation", func(t *testing.T) {
 		// Create temp file
 		tmpFile := t.TempDir() + "/state.json"
@@ -252,7 +252,7 @@ func TestSaveStateToFile(t *testing.T) {
 		verifiedCache.Set("5.6.7.8", true, lru.DefaultExpiration)
 
 		// Save without reconciliation
-		lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs, err := SaveStateToFile(
+		metrics, err := SaveStateToFileWithMetrics(
 			tmpFile,
 			false, // no reconciliation
 			rateCache,
@@ -266,18 +266,18 @@ func TestSaveStateToFile(t *testing.T) {
 		}
 
 		// Verify timing metrics
-		if lockMs < 0 || readMs < 0 || reconcileMs < 0 || marshalMs < 0 || writeMs < 0 || totalMs < 0 {
+		if metrics.LockMs < 0 || metrics.ReadMs < 0 || metrics.ReconcileMs < 0 || metrics.MarshalMs < 0 || metrics.WriteMs < 0 || metrics.TotalMs < 0 {
 			t.Error("Expected all timing metrics to be non-negative")
 		}
 
 		// Verify reconcileMs is 0 when reconciliation is disabled
-		if reconcileMs != 0 {
-			t.Errorf("Expected reconcileMs to be 0 when reconciliation disabled, got %d", reconcileMs)
+		if metrics.ReconcileMs != 0 {
+			t.Errorf("Expected reconcileMs to be 0 when reconciliation disabled, got %d", metrics.ReconcileMs)
 		}
 
 		// Verify readMs is 0 when reconciliation is disabled
-		if readMs != 0 {
-			t.Errorf("Expected readMs to be 0 when reconciliation disabled, got %d", readMs)
+		if metrics.ReadMs != 0 {
+			t.Errorf("Expected readMs to be 0 when reconciliation disabled, got %d", metrics.ReadMs)
 		}
 
 		// Verify file was created and contains data
@@ -341,7 +341,7 @@ func TestSaveStateToFile(t *testing.T) {
 		rateCache.Set("192.168.0.0", uint(10), lru.DefaultExpiration)
 
 		// Save with reconciliation enabled
-		lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs, err := SaveStateToFile(
+		metrics, err := SaveStateToFileWithMetrics(
 			tmpFile,
 			true, // enable reconciliation
 			rateCache,
@@ -355,22 +355,22 @@ func TestSaveStateToFile(t *testing.T) {
 		}
 
 		// Verify timing metrics (all should be non-negative)
-		if lockMs < 0 {
+		if metrics.LockMs < 0 {
 			t.Error("Expected non-negative lockMs")
 		}
-		if readMs < 0 {
+		if metrics.ReadMs < 0 {
 			t.Error("Expected non-negative readMs when reconciliation is enabled")
 		}
-		if reconcileMs < 0 {
+		if metrics.ReconcileMs < 0 {
 			t.Error("Expected non-negative reconcileMs when reconciliation is enabled")
 		}
-		if marshalMs < 0 {
+		if metrics.MarshalMs < 0 {
 			t.Error("Expected non-negative marshalMs")
 		}
-		if writeMs < 0 {
+		if metrics.WriteMs < 0 {
 			t.Error("Expected non-negative writeMs")
 		}
-		if totalMs < 0 {
+		if metrics.TotalMs < 0 {
 			t.Error("Expected non-negative totalMs")
 		}
 
@@ -432,7 +432,7 @@ func TestSaveStateToFile(t *testing.T) {
 		botCache := lru.New(1*time.Hour, 1*time.Minute)
 		verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
-		_, _, _, _, _, _, err := SaveStateToFile(
+		_, err := SaveStateToFileWithMetrics(
 			invalidPath,
 			false,
 			rateCache,
@@ -682,7 +682,7 @@ func TestSaveStateToFileWithMetricsWriteError(t *testing.T) {
 
 func TestAtomicWriteStateFileCreateTempError(t *testing.T) {
 	missingDir := filepath.Join(t.TempDir(), "missing")
-	err := atomicWriteStateFile(filepath.Join(missingDir, "state.json"), nil, nil, nil, 0600)
+	_, _, err := atomicWriteStateFile(filepath.Join(missingDir, "state.json"), nil, nil, nil, 0600)
 	if err == nil {
 		t.Fatal("expected atomicWriteStateFile to fail when temp directory is missing")
 	}
@@ -694,6 +694,7 @@ func TestWriteStateJSON(t *testing.T) {
 	verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
 	rateCache.Set("192.168.0.0", uint(10), lru.DefaultExpiration)
+	rateCache.Set("bad\a-key", uint(2), lru.DefaultExpiration)
 	botCache.Set("1.2.3.4", true, lru.DefaultExpiration)
 	botCache.Set("5.6.7.8", false, lru.DefaultExpiration)
 	verifiedCache.Set("9.9.9.9", true, lru.DefaultExpiration)
@@ -711,8 +712,11 @@ func TestWriteStateJSON(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &saved); err != nil {
 		t.Fatalf("state JSON did not unmarshal: %v", err)
 	}
-	if len(saved.Rate) != 1 || len(saved.Bots) != 2 || len(saved.Verified) != 1 {
+	if len(saved.Rate) != 2 || len(saved.Bots) != 2 || len(saved.Verified) != 1 {
 		t.Fatalf("unexpected saved counts: rate=%d bots=%d verified=%d", len(saved.Rate), len(saved.Bots), len(saved.Verified))
+	}
+	if saved.Rate["bad\a-key"].Value != float64(2) {
+		t.Fatal("expected JSON-escaped rate key to round-trip")
 	}
 	if saved.Bots["1.2.3.4"].Value != true {
 		t.Fatal("expected true bot value to be written")
@@ -974,7 +978,7 @@ func TestSaveAndLoadStateWithExpiration_Synctest(t *testing.T) {
 		verifiedCache1.Set("9.9.9.9", true, lru.NoExpiration)
 
 		// Save state
-		_, _, _, _, _, _, err := SaveStateToFile(
+		_, err := SaveStateToFileWithMetrics(
 			tmpFile,
 			false,
 			rateCache1,
@@ -1045,7 +1049,7 @@ func TestReconcilePreservesNewerData_Synctest(t *testing.T) {
 		initialCache := lru.New(1*time.Hour, lru.NoExpiration)
 		initialCache.Set("192.168.0.0", uint(100), 5*time.Second)
 
-		_, _, _, _, _, _, err := SaveStateToFile(
+		_, err := SaveStateToFileWithMetrics(
 			tmpFile,
 			false,
 			initialCache,
@@ -1067,7 +1071,7 @@ func TestReconcilePreservesNewerData_Synctest(t *testing.T) {
 		newCache.Set("192.168.0.0", uint(200), 8*time.Second) // expires at start+10s
 
 		// Save with reconciliation enabled
-		_, _, _, _, _, _, err = SaveStateToFile(
+		_, err = SaveStateToFileWithMetrics(
 			tmpFile,
 			true, // reconcile
 			newCache,

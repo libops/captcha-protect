@@ -5,6 +5,7 @@ import (
 	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	htemplate "html/template"
 	"log/slog"
 	"math/big"
@@ -1014,7 +1015,6 @@ func (bc *CaptchaProtect) isGoodBot(req *http.Request, clientIP string) bool {
 		v = helper.IsIpGoodBot(clientIP, bc.config.GoodBots)
 	}
 	bc.botCache.Set(clientIP, v, lru.DefaultExpiration)
-	bc.markStateDirty()
 	return v
 }
 
@@ -1097,9 +1097,23 @@ func stateSaveJitter() time.Duration {
 
 	jitter, err := crand.Int(crand.Reader, maxJitter)
 	if err != nil {
+		return fallbackStateSaveJitter(maxJitter.Int64())
+	}
+
+	return time.Duration(jitter.Int64()) * time.Millisecond
+}
+
+func fallbackStateSaveJitter(maxMillis int64) time.Duration {
+	if maxMillis <= 0 {
 		return 0
 	}
 
+	hostname, _ := os.Hostname()
+	hash := fnv.New64a()
+	_, _ = fmt.Fprintf(hash, "%s:%d:%d", hostname, os.Getpid(), time.Now().UnixNano())
+
+	jitter := new(big.Int).SetUint64(hash.Sum64())
+	jitter.Mod(jitter, big.NewInt(maxMillis))
 	return time.Duration(jitter.Int64()) * time.Millisecond
 }
 
@@ -1139,8 +1153,12 @@ func (bc *CaptchaProtect) saveStateNow() bool {
 }
 
 func (bc *CaptchaProtect) loadState() {
+	bc.loadStateFrom(bc.config.PersistentStateFile)
+}
+
+func (bc *CaptchaProtect) loadStateFrom(filePath string) {
 	err := state.LoadStateFromFile(
-		bc.config.PersistentStateFile,
+		filePath,
 		bc.rateCache,
 		bc.botCache,
 		bc.verifiedCache,
@@ -1152,7 +1170,7 @@ func (bc *CaptchaProtect) loadState() {
 	}
 
 	bc.log.Info("Loaded previous state")
-	bc.refreshStateFileModTime()
+	bc.refreshStateFileModTimeFrom(filePath)
 }
 
 func (bc *CaptchaProtect) markStateDirty() {
@@ -1195,10 +1213,16 @@ func (bc *CaptchaProtect) markStateSaved(dirty uint64) {
 }
 
 func (bc *CaptchaProtect) refreshStateFileModTime() {
-	info, err := os.Stat(bc.config.PersistentStateFile)
+	bc.refreshStateFileModTimeFrom(bc.config.PersistentStateFile)
+}
+
+func (bc *CaptchaProtect) refreshStateFileModTimeFrom(filePath string) {
+	info, err := os.Stat(filePath)
 	if err != nil {
 		return
 	}
+	bc.stateMu.Lock()
+	defer bc.stateMu.Unlock()
 	bc.stateFileModTime = info.ModTime()
 }
 
@@ -1208,7 +1232,10 @@ func (bc *CaptchaProtect) reconcileStateFromFileIfChanged() {
 		return
 	}
 	modTime := info.ModTime()
-	if !bc.stateFileModTime.IsZero() && !modTime.After(bc.stateFileModTime) {
+	bc.stateMu.Lock()
+	lastModTime := bc.stateFileModTime
+	bc.stateMu.Unlock()
+	if !lastModTime.IsZero() && !modTime.After(lastModTime) {
 		return
 	}
 
@@ -1226,7 +1253,9 @@ func (bc *CaptchaProtect) reconcileStateFromFileIfChanged() {
 	if info, err := os.Stat(bc.config.PersistentStateFile); err == nil {
 		modTime = info.ModTime()
 	}
+	bc.stateMu.Lock()
 	bc.stateFileModTime = modTime
+	bc.stateMu.Unlock()
 	bc.log.Debug("Reconciled newer state file")
 }
 

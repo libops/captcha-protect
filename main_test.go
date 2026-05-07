@@ -1022,8 +1022,7 @@ func TestStatePersistence(t *testing.T) {
 
 	// Create new instance - should load state
 	bc2, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
-	bc2.config.PersistentStateFile = tmpFile
-	bc2.loadState()
+	bc2.loadStateFrom(tmpFile)
 
 	// Check rate cache
 	val, found := bc2.rateCache.Get("192.168.0.0")
@@ -1044,7 +1043,7 @@ func TestStatePersistence(t *testing.T) {
 	}
 }
 
-func TestRegisterRequestCapsPersistedRateCounter(t *testing.T) {
+func TestRegisterRequestStopsIncrementingAfterRateLimitTrips(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "state.json")
 
 	bc := newStateOnlyCaptchaProtect(tmpFile, 2)
@@ -1058,7 +1057,7 @@ func TestRegisterRequestCapsPersistedRateCounter(t *testing.T) {
 		t.Fatal("Expected rate cache entry")
 	}
 	if got, want := v.(uint), bc.config.RateLimit+1; got != want {
-		t.Fatalf("Expected rate counter to cap at %d, got %d", want, got)
+		t.Fatalf("Expected sequential requests to stop incrementing at %d, got %d", want, got)
 	}
 	if got, want := bc.currentStateDirty(), uint64(bc.config.RateLimit+1); got != want {
 		t.Fatalf("Expected dirty counter to track only effective mutations, got %d want %d", got, want)
@@ -1137,9 +1136,9 @@ func TestStateBookkeepingErrorBranches(t *testing.T) {
 	if err := os.WriteFile(invalidFile, []byte("{invalid json"), 0600); err != nil {
 		t.Fatalf("failed to write invalid state file: %v", err)
 	}
-	bc.config.PersistentStateFile = invalidFile
-	bc.reconcileStateFromFileIfChanged()
-	if !bc.stateFileModTime.IsZero() {
+	invalidBC := newStateOnlyCaptchaProtect(invalidFile, 2)
+	invalidBC.reconcileStateFromFileIfChanged()
+	if !invalidBC.stateFileModTime.IsZero() {
 		t.Fatal("failed reconciliation should not advance state file mod time")
 	}
 }
@@ -1343,8 +1342,7 @@ func TestLoadStateInvalidJSON(t *testing.T) {
 	if err != nil {
 		t.Errorf("Should not fail on invalid state JSON: %v", err)
 	}
-	bc.config.PersistentStateFile = tmpFile
-	bc.loadState()
+	bc.loadStateFrom(tmpFile)
 
 	// Caches should be empty
 	if bc.rateCache.ItemCount() != 0 {

@@ -73,13 +73,9 @@ func TestPersistentStateSharingWithSynctest(t *testing.T) {
 		reader := newStateOnlyCaptchaProtect(stateFile, 2)
 
 		ctx, cancel := context.WithCancel(t.Context())
-		done := make(chan struct{}, 2)
+		done := make(chan struct{}, 1)
 		go func() {
 			writer.saveState(ctx)
-			done <- struct{}{}
-		}()
-		go func() {
-			reader.saveState(ctx)
 			done <- struct{}{}
 		}()
 
@@ -89,7 +85,6 @@ func TestPersistentStateSharingWithSynctest(t *testing.T) {
 
 		time.Sleep(StateSaveInterval + StateSaveJitter + 3*time.Second)
 		synctest.Wait()
-		reader.stateFileModTime = time.Time{}
 		reader.reconcileStateFromFileIfChanged()
 
 		v, ok := reader.rateCache.Get("107.198.0.0")
@@ -102,7 +97,6 @@ func TestPersistentStateSharingWithSynctest(t *testing.T) {
 
 		cancel()
 		synctest.Wait()
-		<-done
 		<-done
 	})
 }

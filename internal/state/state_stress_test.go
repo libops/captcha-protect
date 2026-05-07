@@ -217,8 +217,8 @@ func BenchmarkStateOperations(b *testing.B) {
 			}
 		})
 
-		// Benchmark full SaveStateToFile cycle (with reconciliation)
-		b.Run(fmt.Sprintf("SaveStateToFile/%s", level.Name), func(b *testing.B) {
+		// Benchmark full SaveStateToFileWithMetrics cycle (with reconciliation)
+		b.Run(fmt.Sprintf("SaveStateToFileWithMetrics/%s", level.Name), func(b *testing.B) {
 			tmpDir := b.TempDir()
 			tmpFile := tmpDir + "/state.json"
 			logger := testLogger()
@@ -226,7 +226,7 @@ func BenchmarkStateOperations(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs, err := SaveStateToFile(
+				metrics, err := SaveStateToFileWithMetrics(
 					tmpFile,
 					true, // enable reconciliation
 					rateCache,
@@ -241,7 +241,7 @@ func BenchmarkStateOperations(b *testing.B) {
 				// Report timing breakdown (only once to avoid noise)
 				if i == 0 {
 					b.Logf("Timing breakdown: lock=%dms read=%dms reconcile=%dms marshal=%dms write=%dms total=%dms",
-						lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs)
+						metrics.LockMs, metrics.ReadMs, metrics.ReconcileMs, metrics.MarshalMs, metrics.WriteMs, metrics.TotalMs)
 				}
 			}
 		})
@@ -330,13 +330,13 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 				}
 			})
 
-			// Test full SaveStateToFile with reconciliation
-			t.Run("SaveStateToFile", func(t *testing.T) {
+			// Test full SaveStateToFileWithMetrics with reconciliation
+			t.Run("SaveStateToFileWithMetrics", func(t *testing.T) {
 				tmpFile := t.TempDir() + "/state.json"
 				logger := testLogger()
 
 				// Pre-create a state file to enable reconciliation
-				if _, _, _, _, _, _, err := SaveStateToFile(
+				if _, err := SaveStateToFileWithMetrics(
 					tmpFile,
 					false,
 					rateCache,
@@ -348,7 +348,7 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 				}
 
 				start := time.Now()
-				lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs, err := SaveStateToFile(
+				metrics, err := SaveStateToFileWithMetrics(
 					tmpFile,
 					true, // enable reconciliation
 					rateCache,
@@ -364,7 +364,7 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 
 				t.Logf("SaveStateToFile took %dms (threshold: %dms)", elapsed, thresh.SaveWithReconcileMs)
 				t.Logf("  Breakdown: lock=%dms read=%dms reconcile=%dms marshal=%dms write=%dms total=%dms",
-					lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs)
+					metrics.LockMs, metrics.ReadMs, metrics.ReconcileMs, metrics.MarshalMs, metrics.WriteMs, metrics.TotalMs)
 
 				if elapsed > thresh.SaveWithReconcileMs {
 					slog.Error(fmt.Sprintf("SaveStateToFile took %dms, exceeds threshold of %dms",
@@ -372,10 +372,10 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 				}
 
 				// Verify math adds up (approximately, allowing for measurement overhead)
-				measuredTotal := lockMs + readMs + reconcileMs + marshalMs + writeMs
-				if totalMs > 0 && math.Abs(float64(measuredTotal-totalMs)) > float64(totalMs)*0.2 {
+				measuredTotal := metrics.LockMs + metrics.ReadMs + metrics.ReconcileMs + metrics.MarshalMs + metrics.WriteMs
+				if metrics.TotalMs > 0 && math.Abs(float64(measuredTotal-metrics.TotalMs)) > float64(metrics.TotalMs)*0.2 {
 					t.Logf("Warning: timing components (%dms) don't add up to total (%dms)",
-						measuredTotal, totalMs)
+						measuredTotal, metrics.TotalMs)
 				}
 			})
 		})

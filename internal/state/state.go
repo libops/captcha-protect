@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	lru "github.com/patrickmn/go-cache"
 )
@@ -20,6 +21,7 @@ type CacheEntry struct {
 	Expiration int64       `json:"expiration"` // Unix timestamp in nanoseconds, 0 means no expiration
 }
 
+// State contains the persisted cache snapshot and approximate cache memory usage.
 type State struct {
 	Rate     map[string]CacheEntry `json:"rate"`
 	Bots     map[string]CacheEntry `json:"bots"`
@@ -27,6 +29,8 @@ type State struct {
 	Memory   map[string]uintptr    `json:"memory"`
 }
 
+// Keep concrete entry types: Traefik's Yaegi interpreter cannot reliably handle
+// generic persistentEntry[T] map fields.
 type persistentRateEntry struct {
 	Value      uint  `json:"value"`
 	Expiration int64 `json:"expiration"`
@@ -56,6 +60,7 @@ type reconcileStateFile struct {
 	Verified map[string]persistentBoolEntry `json:"verified"`
 }
 
+// SaveMetrics reports timing and entry counts for a state save.
 type SaveMetrics struct {
 	LockMs          int64
 	ReadMs          int64
@@ -68,6 +73,7 @@ type SaveMetrics struct {
 	VerifiedEntries int
 }
 
+// GetState converts cache items into a serializable state snapshot.
 func GetState(rateCache, botCache, verifiedCache map[string]lru.Item) State {
 	state := State{
 		Memory: make(map[string]uintptr, 3),
@@ -102,19 +108,8 @@ func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cac
 	reconcileCacheEntries(fileState.Verified, verifiedItems, verifiedCache, convertBoolValue)
 }
 
-// SaveStateToFile saves state to a file with locking and optional reconciliation.
-// When reconcile is true, it reads and merges existing file state before saving.
-// Returns timing metrics for debugging.
-func SaveStateToFile(
-	filePath string,
-	reconcile bool,
-	rateCache, botCache, verifiedCache *lru.Cache,
-	log *slog.Logger,
-) (lockMs, readMs, reconcileMs, marshalMs, writeMs, totalMs int64, err error) {
-	metrics, err := SaveStateToFileWithMetrics(filePath, reconcile, rateCache, botCache, verifiedCache, log)
-	return metrics.LockMs, metrics.ReadMs, metrics.ReconcileMs, metrics.MarshalMs, metrics.WriteMs, metrics.TotalMs, err
-}
-
+// SaveStateToFileWithMetrics saves rate and verified state to a file with locking.
+// Bot cache entries are loaded from legacy files but are not persisted because they are derived state.
 func SaveStateToFileWithMetrics(
 	filePath string,
 	reconcile bool,
@@ -161,10 +156,7 @@ func SaveStateToFileWithMetrics(
 	metrics.BotEntries = 0
 	metrics.VerifiedEntries = len(verifiedItems)
 
-	marshalStart := time.Now()
-	err = atomicWriteStateFile(filePath, rateItems, nil, verifiedItems, 0600)
-	metrics.MarshalMs = time.Since(marshalStart).Milliseconds()
-
+	metrics.MarshalMs, metrics.WriteMs, err = atomicWriteStateFile(filePath, rateItems, nil, verifiedItems, 0600)
 	if err != nil {
 		return metrics, err
 	}
@@ -177,33 +169,40 @@ func atomicWriteStateFile(
 	filePath string,
 	rateItems, botItems, verifiedItems map[string]lru.Item,
 	perm os.FileMode,
-) error {
+) (marshalMs, writeMs int64, err error) {
 	dir := filepath.Dir(filePath)
 	tmp, err := os.CreateTemp(dir, filepath.Base(filePath)+".tmp-*")
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 
 	writer := bufio.NewWriterSize(tmp, 1024*1024)
+	marshalStart := time.Now()
 	if err := writeStateJSON(writer, rateItems, botItems, verifiedItems); err != nil {
 		_ = tmp.Close()
-		return err
+		return 0, 0, err
 	}
 	if err := writer.Flush(); err != nil {
 		_ = tmp.Close()
-		return err
+		return 0, 0, err
 	}
+	marshalMs = time.Since(marshalStart).Milliseconds()
+
+	writeStart := time.Now()
 	if err := tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
-		return err
+		return marshalMs, 0, err
 	}
 	if err := tmp.Close(); err != nil {
-		return err
+		return marshalMs, 0, err
 	}
 
-	return os.Rename(tmpName, filePath)
+	if err := os.Rename(tmpName, filePath); err != nil {
+		return marshalMs, 0, err
+	}
+	return marshalMs, time.Since(writeStart).Milliseconds(), nil
 }
 
 func writeStateJSON(
@@ -262,9 +261,8 @@ func writeCacheEntryMap[T any](
 		return 0, err
 	}
 
-	memoryUsage := reflect.TypeOf(map[string]CacheEntry{}).Size()
+	memoryUsage := cacheEntryMapSize
 	first := true
-	quotedKey := make([]byte, 0, 64)
 	for key, item := range items {
 		value, ok := item.Object.(T)
 		if !ok {
@@ -278,8 +276,7 @@ func writeCacheEntryMap[T any](
 		}
 		first = false
 
-		quotedKey = strconv.AppendQuote(quotedKey[:0], key)
-		if _, err := writer.Write(quotedKey); err != nil {
+		if err := writeJSONString(writer, key); err != nil {
 			return memoryUsage, err
 		}
 		if err := writeString(writer, `:{"value":`); err != nil {
@@ -298,8 +295,8 @@ func writeCacheEntryMap[T any](
 			return memoryUsage, err
 		}
 
-		memoryUsage += reflect.TypeOf(key).Size()
-		memoryUsage += reflect.TypeOf(item).Size()
+		memoryUsage += stringSize
+		memoryUsage += lruItemSize
 		memoryUsage += uintptr(len(key))
 	}
 
@@ -308,6 +305,12 @@ func writeCacheEntryMap[T any](
 	}
 	return memoryUsage, nil
 }
+
+var (
+	cacheEntryMapSize = reflect.TypeOf(map[string]CacheEntry{}).Size()
+	stringSize        = reflect.TypeOf("").Size()
+	lruItemSize       = reflect.TypeOf(lru.Item{}).Size()
+)
 
 func writeUint(writer *bufio.Writer, value uint) error {
 	return writeString(writer, strconv.FormatUint(uint64(value), 10))
@@ -323,6 +326,43 @@ func writeBool(writer *bufio.Writer, value bool) error {
 func writeString(writer *bufio.Writer, value string) error {
 	_, err := writer.WriteString(value)
 	return err
+}
+
+func writeJSONString(writer *bufio.Writer, value string) error {
+	if isPlainJSONString(value) {
+		if err := writer.WriteByte('"'); err != nil {
+			return err
+		}
+		if err := writeString(writer, value); err != nil {
+			return err
+		}
+		return writer.WriteByte('"')
+	}
+
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	_, err = writer.Write(encoded)
+	return err
+}
+
+func isPlainJSONString(value string) bool {
+	asciiOnly := true
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '\\', '"':
+			return false
+		default:
+			if value[i] < 0x20 {
+				return false
+			}
+			if value[i] >= utf8.RuneSelf {
+				asciiOnly = false
+			}
+		}
+	}
+	return asciiOnly || utf8.ValidString(value)
 }
 
 // LoadStateFromFile loads state from a file with locking.
@@ -357,6 +397,7 @@ func LoadStateFromFile(
 	return nil
 }
 
+// ReconcileStateFromFile merges newer persisted state into the provided caches.
 func ReconcileStateFromFile(
 	filePath string,
 	rateCache, botCache, verifiedCache *lru.Cache,
