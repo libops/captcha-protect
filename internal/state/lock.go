@@ -4,16 +4,19 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+const staleLockAge = 10 * time.Second
 
 // FileLock represents an exclusive file lock using lock file creation
 // This implementation doesn't use syscall.Flock which is not available in Traefik plugins
 type FileLock struct {
 	lockPath string
 	pid      int
+	owner    string
 }
 
 type lockPIDFile interface {
@@ -22,13 +25,27 @@ type lockPIDFile interface {
 	Sync() error
 }
 
+var (
+	lockOwnerMu      sync.Mutex
+	lockOwnerCounter uint64
+)
+
 // NewFileLock creates a new file lock for the given path.
 // It uses a separate .lock file to coordinate access.
 func NewFileLock(path string) (*FileLock, error) {
+	pid := os.Getpid()
 	return &FileLock{
 		lockPath: path,
-		pid:      os.Getpid(),
+		pid:      pid,
+		owner:    newLockOwner(pid),
 	}, nil
+}
+
+func newLockOwner(pid int) string {
+	lockOwnerMu.Lock()
+	defer lockOwnerMu.Unlock()
+	lockOwnerCounter++
+	return fmt.Sprintf("%d:%d", pid, lockOwnerCounter)
 }
 
 // Lock acquires an exclusive lock by creating a lock file.
@@ -43,30 +60,19 @@ func (fl *FileLock) Lock() error {
 		f, err := os.OpenFile(fl.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err == nil {
 			// Successfully created lock file
-			if err := writeLockPID(f, fl.lockPath, fl.pid); err != nil {
+			if err := writeLockPID(f, fl.lockPath, fl.owner); err != nil {
 				return err
 			}
 			// We hold the lock
 			return nil
 		}
 
-		// If we're here, os.OpenFile failed, likely because the file exists.
-		// Check if lock file is stale (older than 10 seconds)
-		info, statErr := os.Stat(fl.lockPath)
-		if statErr == nil {
-			if time.Since(info.ModTime()) > 10*time.Second {
-				// Lock file is stale, try to remove it
-				removeErr := os.Remove(fl.lockPath)
-
-				if removeErr != nil && !os.IsNotExist(removeErr) {
-					// If we can't remove it (and it's not 'not exist'),
-					// something is wrong (e.g., permissions).
-					return fmt.Errorf("unable to remove stale lock: %v", removeErr)
-				}
-				// Successfully removed stale lock, retry immediately
-				// This reduces the race window significantly
-				continue
-			}
+		removedStale, staleErr := fl.removeStaleLock()
+		if staleErr != nil {
+			return staleErr
+		}
+		if removedStale {
+			continue
 		}
 
 		// If stat failed (e.g., file removed between OpenFile and Stat)
@@ -80,7 +86,40 @@ func (fl *FileLock) Lock() error {
 	}
 }
 
-func writeLockPID(file lockPIDFile, lockPath string, pid int) (err error) {
+func (fl *FileLock) removeStaleLock() (bool, error) {
+	info, statErr := os.Stat(fl.lockPath)
+	if statErr != nil {
+		return false, nil
+	}
+	if time.Since(info.ModTime()) <= staleLockAge {
+		return false, nil
+	}
+
+	cleanupPath := fl.lockPath + ".cleanup"
+	cleanupFile, err := os.OpenFile(cleanupPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- lock path derives from trusted persistent state configuration.
+	if err != nil {
+		return false, nil
+	}
+	if err := writeLockPID(cleanupFile, cleanupPath, fl.owner); err != nil {
+		return false, fmt.Errorf("failed to create stale lock cleanup guard: %w", err)
+	}
+	defer os.Remove(cleanupPath) //nolint:errcheck
+
+	info, statErr = os.Stat(fl.lockPath)
+	if statErr != nil {
+		return os.IsNotExist(statErr), nil
+	}
+	if time.Since(info.ModTime()) <= staleLockAge {
+		return false, nil
+	}
+
+	if err := os.Remove(fl.lockPath); err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("unable to remove stale lock: %v", err)
+	}
+	return true, nil
+}
+
+func writeLockPID(file lockPIDFile, lockPath string, owner string) (err error) {
 	defer func() {
 		closeErr := file.Close()
 		if err == nil && closeErr != nil {
@@ -91,7 +130,7 @@ func writeLockPID(file lockPIDFile, lockPath string, pid int) (err error) {
 		}
 	}()
 
-	if _, err := file.WriteString(strconv.Itoa(pid)); err != nil {
+	if _, err := file.WriteString(owner); err != nil {
 		return fmt.Errorf("failed to write pid to lock file: %w", err)
 	}
 	if err := file.Sync(); err != nil {
@@ -112,11 +151,11 @@ func (fl *FileLock) Unlock() error {
 	}
 
 	lockPIDStr := string(content)
-	myPIDStr := strconv.Itoa(fl.pid)
+	myOwner := fl.owner
 
-	if lockPIDStr != myPIDStr {
+	if lockPIDStr != myOwner {
 		// This is not our lock. Do not remove it.
-		return fmt.Errorf("cannot unlock file held by different process (my_pid: %s, lock_pid: %s)", myPIDStr, lockPIDStr)
+		return fmt.Errorf("cannot unlock file held by different process (my_pid: %d, my_owner: %s, lock_owner: %s)", fl.pid, myOwner, lockPIDStr)
 	}
 
 	// It is our lock, remove it.

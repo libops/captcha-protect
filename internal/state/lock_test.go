@@ -58,9 +58,8 @@ func TestFileLock_LockUnlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not read lock file: %v", err)
 	}
-	expectedPID := strconv.Itoa(os.Getpid())
-	if string(content) != expectedPID {
-		t.Errorf("lock file contains wrong PID: got %q, want %q", string(content), expectedPID)
+	if string(content) != fl.owner {
+		t.Errorf("lock file contains wrong owner: got %q, want %q", string(content), fl.owner)
 	}
 
 	if err := fl.Unlock(); err != nil {
@@ -106,7 +105,7 @@ func TestWriteLockPIDErrorsCleanUpLockFile(t *testing.T) {
 				t.Fatalf("failed to create lock file: %v", err)
 			}
 
-			err := writeLockPID(tt.file, lockPath, os.Getpid())
+			err := writeLockPID(tt.file, lockPath, strconv.Itoa(os.Getpid()))
 			if err == nil || err.Error() != tt.wantErr {
 				t.Fatalf("writeLockPID error = %v, want %q", err, tt.wantErr)
 			}
@@ -270,9 +269,8 @@ func TestFileLock_StaleLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not read new lock file: %v", err)
 	}
-	expectedPID := strconv.Itoa(os.Getpid())
-	if string(content) != expectedPID {
-		t.Errorf("lock file not overwritten with new PID: got %q, want %q", string(content), expectedPID)
+	if string(content) != fl.owner {
+		t.Errorf("lock file not overwritten with new owner: got %q, want %q", string(content), fl.owner)
 	}
 }
 
@@ -360,9 +358,9 @@ func TestFileLock_UnlockSafety(t *testing.T) {
 	tempDir := t.TempDir()
 	lockPath := filepath.Join(tempDir, "test.lock")
 
-	// Create a lock file manually with a fake PID
-	fakePID := "-12345"
-	if err := os.WriteFile(lockPath, []byte(fakePID), 0644); err != nil {
+	// Create a lock file manually with a fake owner token
+	fakeOwner := "-12345:other"
+	if err := os.WriteFile(lockPath, []byte(fakeOwner), 0644); err != nil {
 		t.Fatalf("failed to create fake lock file: %v", err)
 	}
 	defer os.Remove(lockPath) //nolint:errcheck
@@ -379,7 +377,7 @@ func TestFileLock_UnlockSafety(t *testing.T) {
 	}
 
 	// Check for the specific error
-	expectedErr := fmt.Sprintf("cannot unlock file held by different process (my_pid: %d, lock_pid: %s)", fl.pid, fakePID)
+	expectedErr := fmt.Sprintf("cannot unlock file held by different process (my_pid: %d, my_owner: %s, lock_owner: %s)", fl.pid, fl.owner, fakeOwner)
 	if err.Error() != expectedErr {
 		t.Errorf("Unlock() returned wrong error: \ngot:  %q\nwant: %q", err.Error(), expectedErr)
 	}
@@ -397,9 +395,9 @@ func TestFileLock_CloseSafety(t *testing.T) {
 	tempDir := t.TempDir()
 	lockPath := filepath.Join(tempDir, "test.lock")
 
-	// Create a lock file manually with a fake PID
-	fakePID := "-12345"
-	if err := os.WriteFile(lockPath, []byte(fakePID), 0644); err != nil {
+	// Create a lock file manually with a fake owner token
+	fakeOwner := "-12345:other"
+	if err := os.WriteFile(lockPath, []byte(fakeOwner), 0644); err != nil {
 		t.Fatalf("failed to create fake lock file: %v", err)
 	}
 	defer os.Remove(lockPath) //nolint:errcheck
