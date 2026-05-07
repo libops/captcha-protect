@@ -16,13 +16,13 @@ import (
 // This file contains stress tests for state persistence operations at various scales.
 //
 // Performance Findings (Apple M2 Pro):
-//   Small (16 rate / derived bots skipped / 256 verified):
+//   Small (16 rate / 256 verified):
 //     - SaveStateToFile with reconciliation: ~84ms
-//   Medium (256 rate / derived bots skipped / 65K verified):
+//   Medium (256 rate / 65K verified):
 //     - SaveStateToFile with reconciliation: ~410ms
-//   Large (1,024 rate / derived bots skipped / 262K verified):
+//   Large (1,024 rate / 262K verified):
 //     - SaveStateToFile with reconciliation: ~1.8s
-//   XLarge (4,096 rate / derived bots skipped / 1M verified):
+//   XLarge (4,096 rate / 1M verified):
 //     - SaveStateToFile with reconciliation: ~8.7s (approaching 10s save window limit)
 //
 // Recommendation: Do not enable enableStateReconciliation for sites with >1M unique visitors.
@@ -36,7 +36,6 @@ import (
 type StressLevel struct {
 	Name            string
 	RateEntries     int
-	BotEntries      int
 	VerifiedEntries int
 }
 
@@ -46,26 +45,22 @@ func getStressLevels() []StressLevel {
 	return []StressLevel{
 		{
 			Name:            "Small",
-			RateEntries:     1 << 4,  // 2^4 = 16
-			BotEntries:      1 << 16, // 2^16 = 65,536
-			VerifiedEntries: 1 << 8,  // 2^8 = 256
+			RateEntries:     1 << 4, // 2^4 = 16
+			VerifiedEntries: 1 << 8, // 2^8 = 256
 		},
 		{
 			Name:            "Medium",
 			RateEntries:     1 << 8,  // 2^8 = 256
-			BotEntries:      1 << 18, // 2^18 = 262,144 (capped from 2^32)
 			VerifiedEntries: 1 << 16, // 2^16 = 65,536
 		},
 		{
 			Name:            "Large",
 			RateEntries:     1 << 10, // 2^10 = 1,024 (capped from 2^16)
-			BotEntries:      1 << 20, // 2^20 = 1,048,576 (capped from 2^64)
 			VerifiedEntries: 1 << 18, // 2^18 = 262,144 (capped from 2^32)
 		},
 		{
 			Name:            "XLarge",
 			RateEntries:     1 << 12, // 2^12 = 4,096
-			BotEntries:      1 << 22, // 2^22 = 4,194,304
 			VerifiedEntries: 1 << 20, // 2^20 = 1,048,576
 		},
 	}
@@ -80,7 +75,7 @@ func generateIPv4Subnet(index int) string {
 	return fmt.Sprintf("%d.%d.0.0", a, b)
 }
 
-// generateIPv4Address generates a unique IPv4 address for bot/verified caches
+// generateIPv4Address generates a unique IPv4 address for verified caches
 // Uses the pattern: A.B.C.D where all octets are derived from the index
 func generateIPv4Address(index int) string {
 	a := (index >> 24) & 0xFF
@@ -91,7 +86,7 @@ func generateIPv4Address(index int) string {
 }
 
 // populateCaches fills caches with test data based on the stress level
-func populateCaches(level StressLevel, rateCache, botCache, verifiedCache *lru.Cache) {
+func populateCaches(level StressLevel, rateCache, verifiedCache *lru.Cache) {
 	expiration := 24 * time.Hour
 
 	// Populate rate cache with subnet entries
@@ -102,32 +97,7 @@ func populateCaches(level StressLevel, rateCache, botCache, verifiedCache *lru.C
 		rateCache.Set(subnet, rate, expiration)
 	}
 
-	// Populate bot cache with IP addresses
-	for i := 0; i < level.BotEntries; i++ {
-		ip := generateIPv4Address(i)
-		// Alternate between verified and unverified bots
-		isBot := i%2 == 0
-		botCache.Set(ip, isBot, expiration)
-	}
-
 	// Populate verified cache with IP addresses
-	// Use different starting index to avoid overlap with bot cache
-	startOffset := 0x10000000 // Start from 16.0.0.0
-	for i := 0; i < level.VerifiedEntries; i++ {
-		ip := generateIPv4Address(startOffset + i)
-		verifiedCache.Set(ip, true, expiration)
-	}
-}
-
-func populatePersistentCaches(level StressLevel, rateCache, verifiedCache *lru.Cache) {
-	expiration := 24 * time.Hour
-
-	for i := 0; i < level.RateEntries; i++ {
-		subnet := generateIPv4Subnet(i)
-		rate := uint(1 + (i % 100))
-		rateCache.Set(subnet, rate, expiration)
-	}
-
 	startOffset := 0x10000000 // Start from 16.0.0.0
 	for i := 0; i < level.VerifiedEntries; i++ {
 		ip := generateIPv4Address(startOffset + i)
@@ -142,24 +112,23 @@ func BenchmarkStateOperations(b *testing.B) {
 	for _, level := range levels {
 		// Create caches and populate with test data
 		rateCache := lru.New(24*time.Hour, lru.NoExpiration)
-		botCache := lru.New(24*time.Hour, lru.NoExpiration)
 		verifiedCache := lru.New(24*time.Hour, lru.NoExpiration)
 
-		b.Logf("Populating caches for %s level (rate=%d, bots=%d, verified=%d)...",
-			level.Name, level.RateEntries, level.BotEntries, level.VerifiedEntries)
-		populateCaches(level, rateCache, botCache, verifiedCache)
+		b.Logf("Populating caches for %s level (rate=%d, verified=%d)...",
+			level.Name, level.RateEntries, level.VerifiedEntries)
+		populateCaches(level, rateCache, verifiedCache)
 
 		// Benchmark GetState (extract to struct)
 		b.Run(fmt.Sprintf("GetState/%s", level.Name), func(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = GetState(rateCache.Items(), botCache.Items(), verifiedCache.Items())
+				_ = GetState(rateCache.Items(), verifiedCache.Items())
 			}
 		})
 
 		// Benchmark Marshal
-		state := GetState(rateCache.Items(), botCache.Items(), verifiedCache.Items())
+		state := GetState(rateCache.Items(), verifiedCache.Items())
 		b.Run(fmt.Sprintf("Marshal/%s", level.Name), func(b *testing.B) {
 			b.ReportAllocs()
 			var jsonData []byte
@@ -188,11 +157,10 @@ func BenchmarkStateOperations(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				b.StopTimer()
 				newRateCache := lru.New(24*time.Hour, lru.NoExpiration)
-				newBotCache := lru.New(24*time.Hour, lru.NoExpiration)
 				newVerifiedCache := lru.New(24*time.Hour, lru.NoExpiration)
 				b.StartTimer()
 
-				SetState(state, newRateCache, newBotCache, newVerifiedCache)
+				SetState(state, newRateCache, newVerifiedCache)
 			}
 		})
 
@@ -204,7 +172,6 @@ func BenchmarkStateOperations(b *testing.B) {
 				b.StopTimer()
 				// Create fresh caches with some overlapping data
 				newRateCache := lru.New(24*time.Hour, lru.NoExpiration)
-				newBotCache := lru.New(24*time.Hour, lru.NoExpiration)
 				newVerifiedCache := lru.New(24*time.Hour, lru.NoExpiration)
 				// Pre-populate with 50% of entries
 				for j := 0; j < level.RateEntries/2; j++ {
@@ -213,7 +180,7 @@ func BenchmarkStateOperations(b *testing.B) {
 				}
 				b.StartTimer()
 
-				ReconcileState(state, newRateCache, newBotCache, newVerifiedCache)
+				ReconcileState(state, newRateCache, newVerifiedCache)
 			}
 		})
 
@@ -230,7 +197,6 @@ func BenchmarkStateOperations(b *testing.B) {
 					tmpFile,
 					true, // enable reconciliation
 					rateCache,
-					botCache,
 					verifiedCache,
 					logger,
 				)
@@ -296,12 +262,11 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 		t.Run(level.Name, func(t *testing.T) {
 			// Create and populate caches
 			rateCache := lru.New(24*time.Hour, lru.NoExpiration)
-			botCache := lru.New(24*time.Hour, lru.NoExpiration)
 			verifiedCache := lru.New(24*time.Hour, lru.NoExpiration)
 
-			t.Logf("Populating persistent caches (rate=%d, derived bots skipped, verified=%d)...",
+			t.Logf("Populating persistent caches (rate=%d, verified=%d)...",
 				level.RateEntries, level.VerifiedEntries)
-			populatePersistentCaches(level, rateCache, verifiedCache)
+			populateCaches(level, rateCache, verifiedCache)
 
 			thresh := levelThresholds[level.Name]
 
@@ -340,7 +305,6 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 					tmpFile,
 					false,
 					rateCache,
-					botCache,
 					verifiedCache,
 					logger,
 				); err != nil {
@@ -352,7 +316,6 @@ func TestStateOperationsWithinThreshold(t *testing.T) {
 					tmpFile,
 					true, // enable reconciliation
 					rateCache,
-					botCache,
 					verifiedCache,
 					logger,
 				)
@@ -422,7 +385,7 @@ func TestGenerateUniqueIPs(t *testing.T) {
 func marshalPersistentSnapshotForStress(rateCache, verifiedCache *lru.Cache) ([]byte, error) {
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	if err := writeStateJSON(writer, rateCache.Items(), nil, verifiedCache.Items()); err != nil {
+	if err := writeStateJSON(writer, rateCache.Items(), verifiedCache.Items()); err != nil {
 		return nil, err
 	}
 	if err := writer.Flush(); err != nil {

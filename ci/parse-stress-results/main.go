@@ -39,10 +39,10 @@ func main() {
 	currentTest := ""
 
 	// Initialize known tests
-	results["Small"] = &TestResult{Name: "Small", Entries: "16 rate / derived bots skipped / 256 verified", Threshold: 500}
-	results["Medium"] = &TestResult{Name: "Medium", Entries: "256 rate / derived bots skipped / 65K verified", Threshold: 1000}
-	results["Large"] = &TestResult{Name: "Large", Entries: "1K rate / derived bots skipped / 262K verified", Threshold: 3000}
-	results["XLarge"] = &TestResult{Name: "XLarge", Entries: "4K rate / derived bots skipped / 1M verified", Threshold: 10000}
+	results["Small"] = &TestResult{Name: "Small", Entries: "16 rate / 256 verified", Threshold: 500}
+	results["Medium"] = &TestResult{Name: "Medium", Entries: "256 rate / 65K verified", Threshold: 1000}
+	results["Large"] = &TestResult{Name: "Large", Entries: "1K rate / 262K verified", Threshold: 3000}
+	results["XLarge"] = &TestResult{Name: "XLarge", Entries: "4K rate / 1M verified", Threshold: 10000}
 
 	for scanner.Scan() {
 		line := scanner.Text()

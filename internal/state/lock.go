@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -16,8 +17,9 @@ type FileLock struct {
 }
 
 type lockPIDFile interface {
-	WriteString(string) (int, error)
-	Close() error
+	io.StringWriter
+	io.Closer
+	Sync() error
 }
 
 // NewFileLock creates a new file lock for the given path.
@@ -78,18 +80,22 @@ func (fl *FileLock) Lock() error {
 	}
 }
 
-func writeLockPID(file lockPIDFile, lockPath string, pid int) error {
-	_, writeErr := file.WriteString(strconv.Itoa(pid))
-	closeErr := file.Close()
-	if writeErr != nil {
-		// We got the lock but failed to write.
-		// Best effort to clean up, then return the error.
-		_ = os.Remove(lockPath)
-		return fmt.Errorf("failed to write pid to lock file: %v", writeErr)
+func writeLockPID(file lockPIDFile, lockPath string, pid int) (err error) {
+	defer func() {
+		closeErr := file.Close()
+		if err == nil && closeErr != nil {
+			err = fmt.Errorf("failed to close lock file: %w", closeErr)
+		}
+		if err != nil {
+			_ = os.Remove(lockPath)
+		}
+	}()
+
+	if _, err := file.WriteString(strconv.Itoa(pid)); err != nil {
+		return fmt.Errorf("failed to write pid to lock file: %w", err)
 	}
-	if closeErr != nil {
-		_ = os.Remove(lockPath)
-		return fmt.Errorf("failed to close lock file: %v", closeErr)
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("failed to sync lock file: %w", err)
 	}
 	return nil
 }

@@ -24,7 +24,6 @@ type CacheEntry struct {
 // State contains the persisted cache snapshot and approximate cache memory usage.
 type State struct {
 	Rate     map[string]CacheEntry `json:"rate"`
-	Bots     map[string]CacheEntry `json:"bots"`
 	Verified map[string]CacheEntry `json:"verified"`
 	Memory   map[string]uintptr    `json:"memory"`
 }
@@ -43,20 +42,12 @@ type persistentBoolEntry struct {
 
 type persistentState struct {
 	Rate     map[string]persistentRateEntry `json:"rate"`
-	Bots     map[string]persistentBoolEntry `json:"bots"`
 	Verified map[string]persistentBoolEntry `json:"verified"`
 	Memory   map[string]uintptr             `json:"memory"`
 }
 
-type ignoredJSON struct{}
-
-func (ignoredJSON) UnmarshalJSON(_ []byte) error {
-	return nil
-}
-
 type reconcileStateFile struct {
 	Rate     map[string]persistentRateEntry `json:"rate"`
-	Bots     ignoredJSON                    `json:"bots"` // Bot cache is derived and too large to merge on every state save.
 	Verified map[string]persistentBoolEntry `json:"verified"`
 }
 
@@ -69,18 +60,16 @@ type SaveMetrics struct {
 	WriteMs         int64
 	TotalMs         int64
 	RateEntries     int
-	BotEntries      int
 	VerifiedEntries int
 }
 
 // GetState converts cache items into a serializable state snapshot.
-func GetState(rateCache, botCache, verifiedCache map[string]lru.Item) State {
+func GetState(rateCache, verifiedCache map[string]lru.Item) State {
 	state := State{
-		Memory: make(map[string]uintptr, 3),
+		Memory: make(map[string]uintptr, 2),
 	}
 
 	state.Rate, state.Memory["rate"] = getCacheEntries[uint](rateCache)
-	state.Bots, state.Memory["bot"] = getCacheEntries[bool](botCache)
 	state.Verified, state.Memory["verified"] = getCacheEntries[bool](verifiedCache)
 
 	return state
@@ -88,32 +77,28 @@ func GetState(rateCache, botCache, verifiedCache map[string]lru.Item) State {
 
 // SetState loads state data into the provided caches, preserving expiration times.
 // If an entry has already expired (expiration < now), it will be skipped.
-func SetState(state State, rateCache, botCache, verifiedCache *lru.Cache) {
+func SetState(state State, rateCache, verifiedCache *lru.Cache) {
 	loadCacheEntries(state.Rate, rateCache, convertRateValue)
-	loadCacheEntries(state.Bots, botCache, convertBoolValue)
 	loadCacheEntries(state.Verified, verifiedCache, convertBoolValue)
 }
 
 // ReconcileState merges file-based state with in-memory state.
-func ReconcileState(fileState State, rateCache, botCache, verifiedCache *lru.Cache) {
+func ReconcileState(fileState State, rateCache, verifiedCache *lru.Cache) {
 	rateItems := rateCache.Items()
-	botItems := botCache.Items()
 	verifiedItems := verifiedCache.Items()
 
 	// Use "max value wins" for rate cache
 	reconcileRateCache(fileState.Rate, rateItems, rateCache, convertRateValue)
 
-	// Use "later expiration wins" for bot and verified caches
-	reconcileCacheEntries(fileState.Bots, botItems, botCache, convertBoolValue)
+	// Use "later expiration wins" for verified caches
 	reconcileCacheEntries(fileState.Verified, verifiedItems, verifiedCache, convertBoolValue)
 }
 
 // SaveStateToFileWithMetrics saves rate and verified state to a file with locking.
-// Bot cache entries are loaded from legacy files but are not persisted because they are derived state.
 func SaveStateToFileWithMetrics(
 	filePath string,
 	reconcile bool,
-	rateCache, botCache, verifiedCache *lru.Cache,
+	rateCache, verifiedCache *lru.Cache,
 	log *slog.Logger,
 ) (SaveMetrics, error) {
 	startTime := time.Now()
@@ -147,16 +132,12 @@ func SaveStateToFileWithMetrics(
 		}
 	}
 
-	// Bot cache entries are derived from DNS/IP checks and can dwarf the
-	// state that needs cross-instance sharing. Persist only rate limiter and
-	// verified-user state; existing files with bot entries still load.
 	rateItems := rateCache.Items()
 	verifiedItems := verifiedCache.Items()
 	metrics.RateEntries = len(rateItems)
-	metrics.BotEntries = 0
 	metrics.VerifiedEntries = len(verifiedItems)
 
-	metrics.MarshalMs, metrics.WriteMs, err = atomicWriteStateFile(filePath, rateItems, nil, verifiedItems, 0600)
+	metrics.MarshalMs, metrics.WriteMs, err = atomicWriteStateFile(filePath, rateItems, verifiedItems, 0600)
 	if err != nil {
 		return metrics, err
 	}
@@ -167,7 +148,7 @@ func SaveStateToFileWithMetrics(
 
 func atomicWriteStateFile(
 	filePath string,
-	rateItems, botItems, verifiedItems map[string]lru.Item,
+	rateItems, verifiedItems map[string]lru.Item,
 	perm os.FileMode,
 ) (marshalMs, writeMs int64, err error) {
 	dir := filepath.Dir(filePath)
@@ -180,7 +161,7 @@ func atomicWriteStateFile(
 
 	writer := bufio.NewWriterSize(tmp, 1024*1024)
 	marshalStart := time.Now()
-	if err := writeStateJSON(writer, rateItems, botItems, verifiedItems); err != nil {
+	if err := writeStateJSON(writer, rateItems, verifiedItems); err != nil {
 		_ = tmp.Close()
 		return 0, 0, err
 	}
@@ -207,19 +188,12 @@ func atomicWriteStateFile(
 
 func writeStateJSON(
 	writer *bufio.Writer,
-	rateItems, botItems, verifiedItems map[string]lru.Item,
+	rateItems, verifiedItems map[string]lru.Item,
 ) error {
 	if err := writeString(writer, `{"rate":`); err != nil {
 		return err
 	}
 	rateMemory, err := writeCacheEntryMap[uint](writer, rateItems, writeUint)
-	if err != nil {
-		return err
-	}
-	if err := writeString(writer, `,"bots":`); err != nil {
-		return err
-	}
-	botMemory, err := writeCacheEntryMap[bool](writer, botItems, writeBool)
 	if err != nil {
 		return err
 	}
@@ -235,12 +209,6 @@ func writeStateJSON(
 		return err
 	}
 	if err := writeString(writer, strconv.FormatUint(uint64(rateMemory), 10)); err != nil {
-		return err
-	}
-	if err := writeString(writer, `,"bot":`); err != nil {
-		return err
-	}
-	if err := writeString(writer, strconv.FormatUint(uint64(botMemory), 10)); err != nil {
 		return err
 	}
 	if err := writeString(writer, `,"verified":`); err != nil {
@@ -368,7 +336,7 @@ func isPlainJSONString(value string) bool {
 // LoadStateFromFile loads state from a file with locking.
 func LoadStateFromFile(
 	filePath string,
-	rateCache, botCache, verifiedCache *lru.Cache,
+	rateCache, verifiedCache *lru.Cache,
 ) error {
 	lock, err := NewFileLock(filePath + ".lock")
 	if err != nil {
@@ -391,8 +359,7 @@ func LoadStateFromFile(
 		return err
 	}
 
-	// Use SetState which properly handles expiration times
-	setPersistentState(loadedState, rateCache, botCache, verifiedCache)
+	setPersistentState(loadedState, rateCache, verifiedCache)
 
 	return nil
 }
@@ -400,7 +367,7 @@ func LoadStateFromFile(
 // ReconcileStateFromFile merges newer persisted state into the provided caches.
 func ReconcileStateFromFile(
 	filePath string,
-	rateCache, botCache, verifiedCache *lru.Cache,
+	rateCache, verifiedCache *lru.Cache,
 ) error {
 	lock, err := NewFileLock(filePath + ".lock")
 	if err != nil {
@@ -491,9 +458,8 @@ func loadCacheEntries[T any](
 	}
 }
 
-func setPersistentState(state persistentState, rateCache, botCache, verifiedCache *lru.Cache) {
+func setPersistentState(state persistentState, rateCache, verifiedCache *lru.Cache) {
 	loadPersistentRateEntries(state.Rate, rateCache)
-	loadPersistentBoolEntries(state.Bots, botCache)
 	loadPersistentBoolEntries(state.Verified, verifiedCache)
 }
 
@@ -578,8 +544,7 @@ func reconcilePersistentRateCache(
 	}
 }
 
-// reconcileCacheEntries implements "later expiration wins"
-// This is correct for bool flags (Verified, Bots).
+// reconcileCacheEntries implements "later expiration wins" for bool flags.
 func reconcileCacheEntries[T any](
 	fileEntries map[string]CacheEntry,
 	memItems map[string]lru.Item,

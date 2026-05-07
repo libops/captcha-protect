@@ -17,20 +17,16 @@ import (
 func TestGetState(t *testing.T) {
 	// Create test caches
 	rateCache := lru.New(1*time.Hour, 1*time.Minute)
-	botCache := lru.New(1*time.Hour, 1*time.Minute)
 	verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
 	// Add test data
 	rateCache.Set("192.168.0.0", uint(10), lru.DefaultExpiration)
 	rateCache.Set("10.0.0.0", uint(5), lru.DefaultExpiration)
 
-	botCache.Set("1.2.3.4", true, lru.DefaultExpiration)
-	botCache.Set("5.6.7.8", false, lru.DefaultExpiration)
-
 	verifiedCache.Set("9.9.9.9", true, lru.DefaultExpiration)
 
 	// Get state
-	state := GetState(rateCache.Items(), botCache.Items(), verifiedCache.Items())
+	state := GetState(rateCache.Items(), verifiedCache.Items())
 
 	// Verify rate cache data
 	if len(state.Rate) != 2 {
@@ -47,21 +43,6 @@ func TestGetState(t *testing.T) {
 		t.Error("Expected non-zero expiration for 192.168.0.0")
 	}
 
-	// Verify bot cache data
-	if len(state.Bots) != 2 {
-		t.Errorf("Expected 2 bot entries, got %d", len(state.Bots))
-	}
-	if state.Bots["1.2.3.4"].Value != true {
-		t.Error("Expected bot 1.2.3.4 to be true")
-	}
-	if state.Bots["5.6.7.8"].Value != false {
-		t.Error("Expected bot 5.6.7.8 to be false")
-	}
-	// Verify expiration timestamps are set
-	if state.Bots["1.2.3.4"].Expiration == 0 {
-		t.Error("Expected non-zero expiration for bot 1.2.3.4")
-	}
-
 	// Verify verified cache data
 	if len(state.Verified) != 1 {
 		t.Errorf("Expected 1 verified entry, got %d", len(state.Verified))
@@ -75,14 +56,11 @@ func TestGetState(t *testing.T) {
 	}
 
 	// Verify memory tracking exists
-	if len(state.Memory) != 3 {
-		t.Errorf("Expected 3 memory entries, got %d", len(state.Memory))
+	if len(state.Memory) != 2 {
+		t.Errorf("Expected 2 memory entries, got %d", len(state.Memory))
 	}
 	if state.Memory["rate"] == 0 {
 		t.Error("Expected non-zero memory for rate cache")
-	}
-	if state.Memory["bot"] == 0 {
-		t.Error("Expected non-zero memory for bot cache")
 	}
 	if state.Memory["verified"] == 0 {
 		t.Error("Expected non-zero memory for verified cache")
@@ -92,22 +70,18 @@ func TestGetState(t *testing.T) {
 func TestGetStateEmpty(t *testing.T) {
 	// Create empty caches
 	rateCache := lru.New(1*time.Hour, 1*time.Minute)
-	botCache := lru.New(1*time.Hour, 1*time.Minute)
 	verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
-	state := GetState(rateCache.Items(), botCache.Items(), verifiedCache.Items())
+	state := GetState(rateCache.Items(), verifiedCache.Items())
 
 	if len(state.Rate) != 0 {
 		t.Errorf("Expected 0 rate entries, got %d", len(state.Rate))
 	}
-	if len(state.Bots) != 0 {
-		t.Errorf("Expected 0 bot entries, got %d", len(state.Bots))
-	}
 	if len(state.Verified) != 0 {
 		t.Errorf("Expected 0 verified entries, got %d", len(state.Verified))
 	}
-	if len(state.Memory) != 3 {
-		t.Errorf("Expected 3 memory entries, got %d", len(state.Memory))
+	if len(state.Memory) != 2 {
+		t.Errorf("Expected 2 memory entries, got %d", len(state.Memory))
 	}
 }
 
@@ -122,10 +96,6 @@ func TestSetState(t *testing.T) {
 			"192.168.0.0": {Value: uint(10), Expiration: futureExpiration},
 			"10.0.0.0":    {Value: uint(5), Expiration: pastExpiration}, // expired
 		},
-		Bots: map[string]CacheEntry{
-			"1.2.3.4": {Value: true, Expiration: futureExpiration},
-			"5.6.7.8": {Value: false, Expiration: pastExpiration}, // expired
-		},
 		Verified: map[string]CacheEntry{
 			"9.9.9.9": {Value: true, Expiration: futureExpiration},
 			"8.8.8.8": {Value: true, Expiration: pastExpiration}, // expired
@@ -135,11 +105,10 @@ func TestSetState(t *testing.T) {
 
 	// Create caches
 	rateCache := lru.New(1*time.Hour, 1*time.Minute)
-	botCache := lru.New(1*time.Hour, 1*time.Minute)
 	verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
 	// Set state
-	SetState(state, rateCache, botCache, verifiedCache)
+	SetState(state, rateCache, verifiedCache)
 
 	// Verify only non-expired entries were loaded
 	if rateCache.ItemCount() != 1 {
@@ -150,13 +119,6 @@ func TestSetState(t *testing.T) {
 	}
 	if _, ok := rateCache.Get("10.0.0.0"); ok {
 		t.Error("Expected expired entry 10.0.0.0 to be filtered out")
-	}
-
-	if botCache.ItemCount() != 1 {
-		t.Errorf("Expected 1 bot entry (expired filtered out), got %d", botCache.ItemCount())
-	}
-	if v, ok := botCache.Get("1.2.3.4"); !ok || v.(bool) != true {
-		t.Error("Expected bot 1.2.3.4 to be true")
 	}
 
 	if verifiedCache.ItemCount() != 2 {
@@ -193,7 +155,6 @@ func TestReconcileState(t *testing.T) {
 
 	// Create memory caches with some overlapping data
 	rateCache := lru.New(1*time.Hour, 1*time.Minute)
-	botCache := lru.New(1*time.Hour, 1*time.Minute)
 	verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
 	rateCache.Set("192.168.0.0", uint(10), time.Duration(oldExpiration-now)) // older, should be replaced
@@ -203,7 +164,7 @@ func TestReconcileState(t *testing.T) {
 	verifiedCache.Set("2.2.2.2", true, time.Duration(newExpiration-now)) // newer, should be kept
 
 	// Reconcile
-	ReconcileState(fileState, rateCache, botCache, verifiedCache)
+	ReconcileState(fileState, rateCache, verifiedCache)
 
 	// Verify reconciliation results
 	// 192.168.0.0 should be updated to file's value (newer expiration)
@@ -244,11 +205,9 @@ func TestSaveStateToFileWithMetrics(t *testing.T) {
 
 		// Create caches with test data
 		rateCache := lru.New(1*time.Hour, 1*time.Minute)
-		botCache := lru.New(1*time.Hour, 1*time.Minute)
 		verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
 		rateCache.Set("192.168.0.0", uint(10), lru.DefaultExpiration)
-		botCache.Set("1.2.3.4", false, lru.DefaultExpiration)
 		verifiedCache.Set("5.6.7.8", true, lru.DefaultExpiration)
 
 		// Save without reconciliation
@@ -256,7 +215,6 @@ func TestSaveStateToFileWithMetrics(t *testing.T) {
 			tmpFile,
 			false, // no reconciliation
 			rateCache,
-			botCache,
 			verifiedCache,
 			testLogger(),
 		)
@@ -306,9 +264,6 @@ func TestSaveStateToFileWithMetrics(t *testing.T) {
 		if len(savedState.Rate) != 1 {
 			t.Errorf("Expected 1 rate entry, got %d", len(savedState.Rate))
 		}
-		if len(savedState.Bots) != 0 {
-			t.Errorf("Expected derived bot cache entries to be skipped, got %d", len(savedState.Bots))
-		}
 		if len(savedState.Verified) != 1 {
 			t.Errorf("Expected 1 verified entry, got %d", len(savedState.Verified))
 		}
@@ -324,9 +279,8 @@ func TestSaveStateToFileWithMetrics(t *testing.T) {
 			Rate: map[string]CacheEntry{
 				"10.0.0.0": {Value: uint(5), Expiration: futureExpiration},
 			},
-			Bots:     map[string]CacheEntry{},
 			Verified: map[string]CacheEntry{},
-			Memory:   map[string]uintptr{"rate": 8, "bot": 8, "verified": 8},
+			Memory:   map[string]uintptr{"rate": 8, "verified": 8},
 		}
 		initialData, _ := json.Marshal(initialState)
 		if err := os.WriteFile(tmpFile, initialData, 0644); err != nil {
@@ -335,7 +289,6 @@ func TestSaveStateToFileWithMetrics(t *testing.T) {
 
 		// Create caches with different data
 		rateCache := lru.New(1*time.Hour, 1*time.Minute)
-		botCache := lru.New(1*time.Hour, 1*time.Minute)
 		verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
 		rateCache.Set("192.168.0.0", uint(10), lru.DefaultExpiration)
@@ -345,7 +298,6 @@ func TestSaveStateToFileWithMetrics(t *testing.T) {
 			tmpFile,
 			true, // enable reconciliation
 			rateCache,
-			botCache,
 			verifiedCache,
 			testLogger(),
 		)
@@ -391,18 +343,15 @@ func TestSaveStateToFileWithMetrics(t *testing.T) {
 		tmpFile := t.TempDir() + "/state.json"
 
 		rateCache := lru.New(1*time.Hour, 1*time.Minute)
-		botCache := lru.New(1*time.Hour, 1*time.Minute)
 		verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
 		rateCache.Set("192.168.0.0", uint(10), lru.DefaultExpiration)
-		botCache.Set("1.2.3.4", false, lru.DefaultExpiration)
 		verifiedCache.Set("5.6.7.8", true, lru.DefaultExpiration)
 
 		metrics, err := SaveStateToFileWithMetrics(
 			tmpFile,
 			false,
 			rateCache,
-			botCache,
 			verifiedCache,
 			testLogger(),
 		)
@@ -412,9 +361,6 @@ func TestSaveStateToFileWithMetrics(t *testing.T) {
 
 		if metrics.RateEntries != 1 {
 			t.Errorf("Expected 1 rate entry, got %d", metrics.RateEntries)
-		}
-		if metrics.BotEntries != 0 {
-			t.Errorf("Expected derived bot cache entries to be skipped, got %d", metrics.BotEntries)
 		}
 		if metrics.VerifiedEntries != 1 {
 			t.Errorf("Expected 1 verified entry, got %d", metrics.VerifiedEntries)
@@ -429,14 +375,12 @@ func TestSaveStateToFileWithMetrics(t *testing.T) {
 		invalidPath := "/invalid/directory/that/does/not/exist/state.json"
 
 		rateCache := lru.New(1*time.Hour, 1*time.Minute)
-		botCache := lru.New(1*time.Hour, 1*time.Minute)
 		verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
 		_, err := SaveStateToFileWithMetrics(
 			invalidPath,
 			false,
 			rateCache,
-			botCache,
 			verifiedCache,
 			testLogger(),
 		)
@@ -459,13 +403,10 @@ func TestLoadStateFromFile(t *testing.T) {
 				"192.168.0.0": {Value: uint(10), Expiration: futureExpiration},
 				"10.0.0.0":    {Value: uint(5), Expiration: futureExpiration},
 			},
-			Bots: map[string]CacheEntry{
-				"1.2.3.4": {Value: true, Expiration: futureExpiration},
-			},
 			Verified: map[string]CacheEntry{
 				"5.6.7.8": {Value: true, Expiration: futureExpiration},
 			},
-			Memory: map[string]uintptr{"rate": 8, "bot": 8, "verified": 8},
+			Memory: map[string]uintptr{"rate": 8, "verified": 8},
 		}
 
 		data, _ := json.Marshal(testState)
@@ -475,10 +416,9 @@ func TestLoadStateFromFile(t *testing.T) {
 
 		// Load into empty caches
 		rateCache := lru.New(1*time.Hour, 1*time.Minute)
-		botCache := lru.New(1*time.Hour, 1*time.Minute)
 		verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
-		err := LoadStateFromFile(tmpFile, rateCache, botCache, verifiedCache)
+		err := LoadStateFromFile(tmpFile, rateCache, verifiedCache)
 		if err != nil {
 			t.Fatalf("LoadStateFromFile failed: %v", err)
 		}
@@ -487,9 +427,6 @@ func TestLoadStateFromFile(t *testing.T) {
 		if rateCache.ItemCount() != 2 {
 			t.Errorf("Expected 2 rate entries, got %d", rateCache.ItemCount())
 		}
-		if botCache.ItemCount() != 1 {
-			t.Errorf("Expected 1 bot entry, got %d", botCache.ItemCount())
-		}
 		if verifiedCache.ItemCount() != 1 {
 			t.Errorf("Expected 1 verified entry, got %d", verifiedCache.ItemCount())
 		}
@@ -497,9 +434,6 @@ func TestLoadStateFromFile(t *testing.T) {
 		// Verify specific values
 		if v, ok := rateCache.Get("192.168.0.0"); !ok || v.(uint) != 10 {
 			t.Error("Expected rate 10 for 192.168.0.0")
-		}
-		if v, ok := botCache.Get("1.2.3.4"); !ok || v.(bool) != true {
-			t.Error("Expected bot 1.2.3.4 to be true")
 		}
 		if v, ok := verifiedCache.Get("5.6.7.8"); !ok || v.(bool) != true {
 			t.Error("Expected 5.6.7.8 to be verified")
@@ -516,9 +450,8 @@ func TestLoadStateFromFile(t *testing.T) {
 			Rate: map[string]CacheEntry{
 				"192.168.0.0": {Value: uint(10), Expiration: pastExpiration}, // expired
 			},
-			Bots:     map[string]CacheEntry{},
 			Verified: map[string]CacheEntry{},
-			Memory:   map[string]uintptr{"rate": 8, "bot": 8, "verified": 8},
+			Memory:   map[string]uintptr{"rate": 8, "verified": 8},
 		}
 
 		data, _ := json.Marshal(testState)
@@ -528,10 +461,9 @@ func TestLoadStateFromFile(t *testing.T) {
 		}
 		// Load into empty caches
 		rateCache := lru.New(1*time.Hour, 1*time.Minute)
-		botCache := lru.New(1*time.Hour, 1*time.Minute)
 		verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
-		err = LoadStateFromFile(tmpFile, rateCache, botCache, verifiedCache)
+		err = LoadStateFromFile(tmpFile, rateCache, verifiedCache)
 		if err != nil {
 			t.Fatalf("LoadStateFromFile failed: %v", err)
 		}
@@ -546,10 +478,9 @@ func TestLoadStateFromFile(t *testing.T) {
 		nonExistentFile := t.TempDir() + "/does-not-exist.json"
 
 		rateCache := lru.New(1*time.Hour, 1*time.Minute)
-		botCache := lru.New(1*time.Hour, 1*time.Minute)
 		verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
-		err := LoadStateFromFile(nonExistentFile, rateCache, botCache, verifiedCache)
+		err := LoadStateFromFile(nonExistentFile, rateCache, verifiedCache)
 		if err == nil {
 			t.Error("Expected error for non-existent file, got nil")
 		}
@@ -564,10 +495,9 @@ func TestLoadStateFromFile(t *testing.T) {
 		}
 
 		rateCache := lru.New(1*time.Hour, 1*time.Minute)
-		botCache := lru.New(1*time.Hour, 1*time.Minute)
 		verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
-		err := LoadStateFromFile(tmpFile, rateCache, botCache, verifiedCache)
+		err := LoadStateFromFile(tmpFile, rateCache, verifiedCache)
 		if err == nil {
 			t.Error("Expected error for invalid JSON, got nil")
 		}
@@ -587,11 +517,10 @@ func TestLoadStateFromFile(t *testing.T) {
 		}
 
 		rateCache := lru.New(1*time.Hour, 1*time.Minute)
-		botCache := lru.New(1*time.Hour, 1*time.Minute)
 		verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
 		// Empty file returns nil (no state to load, which is fine)
-		err := LoadStateFromFile(tmpFile, rateCache, botCache, verifiedCache)
+		err := LoadStateFromFile(tmpFile, rateCache, verifiedCache)
 		if err != nil {
 			t.Errorf("Unexpected error for empty file: %v", err)
 		}
@@ -613,11 +542,8 @@ func TestReconcileStateFromFile(t *testing.T) {
 		Rate: map[string]CacheEntry{
 			"192.168.0.0": {Value: uint(10), Expiration: futureExpiration},
 		},
-		Bots: map[string]CacheEntry{
-			"1.2.3.4": {Value: true, Expiration: futureExpiration},
-		},
 		Verified: map[string]CacheEntry{},
-		Memory:   map[string]uintptr{"rate": 8, "bot": 8, "verified": 8},
+		Memory:   map[string]uintptr{"rate": 8, "verified": 8},
 	}
 	fileState.Verified = map[string]CacheEntry{
 		"5.6.7.8": {Value: true, Expiration: futureExpiration},
@@ -629,13 +555,12 @@ func TestReconcileStateFromFile(t *testing.T) {
 	}
 
 	rateCache := lru.New(1*time.Hour, 1*time.Minute)
-	botCache := lru.New(1*time.Hour, 1*time.Minute)
 	verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
 	rateCache.Set("10.0.0.0", uint(5), lru.DefaultExpiration)
 	verifiedCache.Set("9.9.9.9", false, time.Duration(laterExpiration-now))
 
-	if err := ReconcileStateFromFile(tmpFile, rateCache, botCache, verifiedCache); err != nil {
+	if err := ReconcileStateFromFile(tmpFile, rateCache, verifiedCache); err != nil {
 		t.Fatalf("ReconcileStateFromFile failed: %v", err)
 	}
 
@@ -644,9 +569,6 @@ func TestReconcileStateFromFile(t *testing.T) {
 	}
 	if v, ok := rateCache.Get("10.0.0.0"); !ok || v.(uint) != 5 {
 		t.Error("Expected existing memory state to be retained")
-	}
-	if botCache.ItemCount() != 0 {
-		t.Errorf("Expected derived bot cache entries to be skipped during reconciliation, got %d", botCache.ItemCount())
 	}
 	if v, ok := verifiedCache.Get("5.6.7.8"); !ok || v.(bool) != true {
 		t.Error("Expected file verified state to be reconciled into memory")
@@ -660,7 +582,6 @@ func TestSaveStateToFileWithMetricsWriteError(t *testing.T) {
 	statePath := t.TempDir()
 
 	rateCache := lru.New(1*time.Hour, 1*time.Minute)
-	botCache := lru.New(1*time.Hour, 1*time.Minute)
 	verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 	rateCache.Set("192.168.0.0", uint(10), lru.DefaultExpiration)
 
@@ -668,7 +589,6 @@ func TestSaveStateToFileWithMetricsWriteError(t *testing.T) {
 		statePath,
 		false,
 		rateCache,
-		botCache,
 		verifiedCache,
 		testLogger(),
 	)
@@ -682,7 +602,7 @@ func TestSaveStateToFileWithMetricsWriteError(t *testing.T) {
 
 func TestAtomicWriteStateFileCreateTempError(t *testing.T) {
 	missingDir := filepath.Join(t.TempDir(), "missing")
-	_, _, err := atomicWriteStateFile(filepath.Join(missingDir, "state.json"), nil, nil, nil, 0600)
+	_, _, err := atomicWriteStateFile(filepath.Join(missingDir, "state.json"), nil, nil, 0600)
 	if err == nil {
 		t.Fatal("expected atomicWriteStateFile to fail when temp directory is missing")
 	}
@@ -690,18 +610,15 @@ func TestAtomicWriteStateFileCreateTempError(t *testing.T) {
 
 func TestWriteStateJSON(t *testing.T) {
 	rateCache := lru.New(1*time.Hour, 1*time.Minute)
-	botCache := lru.New(1*time.Hour, 1*time.Minute)
 	verifiedCache := lru.New(1*time.Hour, 1*time.Minute)
 
 	rateCache.Set("192.168.0.0", uint(10), lru.DefaultExpiration)
 	rateCache.Set("bad\a-key", uint(2), lru.DefaultExpiration)
-	botCache.Set("1.2.3.4", true, lru.DefaultExpiration)
-	botCache.Set("5.6.7.8", false, lru.DefaultExpiration)
 	verifiedCache.Set("9.9.9.9", true, lru.DefaultExpiration)
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	if err := writeStateJSON(writer, rateCache.Items(), botCache.Items(), verifiedCache.Items()); err != nil {
+	if err := writeStateJSON(writer, rateCache.Items(), verifiedCache.Items()); err != nil {
 		t.Fatalf("writeStateJSON failed: %v", err)
 	}
 	if err := writer.Flush(); err != nil {
@@ -712,17 +629,11 @@ func TestWriteStateJSON(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &saved); err != nil {
 		t.Fatalf("state JSON did not unmarshal: %v", err)
 	}
-	if len(saved.Rate) != 2 || len(saved.Bots) != 2 || len(saved.Verified) != 1 {
-		t.Fatalf("unexpected saved counts: rate=%d bots=%d verified=%d", len(saved.Rate), len(saved.Bots), len(saved.Verified))
+	if len(saved.Rate) != 2 || len(saved.Verified) != 1 {
+		t.Fatalf("unexpected saved counts: rate=%d verified=%d", len(saved.Rate), len(saved.Verified))
 	}
 	if saved.Rate["bad\a-key"].Value != float64(2) {
 		t.Fatal("expected JSON-escaped rate key to round-trip")
-	}
-	if saved.Bots["1.2.3.4"].Value != true {
-		t.Fatal("expected true bot value to be written")
-	}
-	if saved.Bots["5.6.7.8"].Value != false {
-		t.Fatal("expected false bot value to be written")
 	}
 }
 
@@ -733,7 +644,6 @@ func TestWriteStateJSONUnexpectedType(t *testing.T) {
 		writer,
 		map[string]lru.Item{"bad": {Object: "not-a-uint", Expiration: time.Now().Add(time.Hour).UnixNano()}},
 		nil,
-		nil,
 	)
 	if err == nil {
 		t.Fatal("expected writeStateJSON to reject unexpected cache value type")
@@ -741,15 +651,14 @@ func TestWriteStateJSONUnexpectedType(t *testing.T) {
 }
 
 func TestReconcileStateFromFileEmptyAndInvalidFiles(t *testing.T) {
-	newCaches := func() (*lru.Cache, *lru.Cache, *lru.Cache) {
+	newCaches := func() (*lru.Cache, *lru.Cache) {
 		return lru.New(1*time.Hour, 1*time.Minute),
-			lru.New(1*time.Hour, 1*time.Minute),
 			lru.New(1*time.Hour, 1*time.Minute)
 	}
 
 	t.Run("missing file", func(t *testing.T) {
-		rateCache, botCache, verifiedCache := newCaches()
-		err := ReconcileStateFromFile(filepath.Join(t.TempDir(), "missing.json"), rateCache, botCache, verifiedCache)
+		rateCache, verifiedCache := newCaches()
+		err := ReconcileStateFromFile(filepath.Join(t.TempDir(), "missing.json"), rateCache, verifiedCache)
 		if err == nil {
 			t.Fatal("expected missing state file to return read error")
 		}
@@ -761,8 +670,8 @@ func TestReconcileStateFromFileEmptyAndInvalidFiles(t *testing.T) {
 			t.Fatalf("failed to write empty state file: %v", err)
 		}
 
-		rateCache, botCache, verifiedCache := newCaches()
-		if err := ReconcileStateFromFile(tmpFile, rateCache, botCache, verifiedCache); err != nil {
+		rateCache, verifiedCache := newCaches()
+		if err := ReconcileStateFromFile(tmpFile, rateCache, verifiedCache); err != nil {
 			t.Fatalf("empty state file should be a no-op: %v", err)
 		}
 	})
@@ -773,8 +682,8 @@ func TestReconcileStateFromFileEmptyAndInvalidFiles(t *testing.T) {
 			t.Fatalf("failed to write invalid state file: %v", err)
 		}
 
-		rateCache, botCache, verifiedCache := newCaches()
-		if err := ReconcileStateFromFile(tmpFile, rateCache, botCache, verifiedCache); err == nil {
+		rateCache, verifiedCache := newCaches()
+		if err := ReconcileStateFromFile(tmpFile, rateCache, verifiedCache); err == nil {
 			t.Fatal("expected invalid state file to return unmarshal error")
 		}
 	})
@@ -804,12 +713,6 @@ func TestSetStateWithExpiration_Synctest(t *testing.T) {
 					Expiration: start.Add(10 * time.Second).UnixNano(), // expires in 10s
 				},
 			},
-			Bots: map[string]CacheEntry{
-				"1.2.3.4": {
-					Value:      true,
-					Expiration: start.Add(3 * time.Second).UnixNano(), // expires in 3s
-				},
-			},
 			Verified: map[string]CacheEntry{
 				"9.9.9.9": {
 					Value:      true,
@@ -820,31 +723,22 @@ func TestSetStateWithExpiration_Synctest(t *testing.T) {
 
 		// Create empty caches (no cleanup interval to avoid background goroutines)
 		rateCache := lru.New(1*time.Hour, lru.NoExpiration)
-		botCache := lru.New(1*time.Hour, lru.NoExpiration)
 		verifiedCache := lru.New(1*time.Hour, lru.NoExpiration)
 
 		// Load state
-		SetState(state, rateCache, botCache, verifiedCache)
+		SetState(state, rateCache, verifiedCache)
 
 		// Verify all entries are loaded
 		if rateCache.ItemCount() != 2 {
 			t.Errorf("Expected 2 rate entries, got %d", rateCache.ItemCount())
 		}
-		if botCache.ItemCount() != 1 {
-			t.Errorf("Expected 1 bot entry, got %d", botCache.ItemCount())
-		}
 		if verifiedCache.ItemCount() != 1 {
 			t.Errorf("Expected 1 verified entry, got %d", verifiedCache.ItemCount())
 		}
 
-		// Advance time by 4 seconds (bot entry should expire, rate entries still valid)
+		// Advance time by 4 seconds (rate entries still valid)
 		time.Sleep(4 * time.Second)
 		synctest.Wait()
-
-		// Bot cache should be empty (expired at 3s)
-		if _, found := botCache.Get("1.2.3.4"); found {
-			t.Error("Bot entry should have expired after 3 seconds")
-		}
 
 		// Rate entries should still be present
 		if _, found := rateCache.Get("192.168.0.0"); !found {
@@ -910,7 +804,6 @@ func TestReconcileStateWithExpiration_Synctest(t *testing.T) {
 
 		// Create memory caches with overlapping data (no cleanup interval to avoid background goroutines)
 		rateCache := lru.New(1*time.Hour, lru.NoExpiration)
-		botCache := lru.New(1*time.Hour, lru.NoExpiration)
 		verifiedCache := lru.New(1*time.Hour, lru.NoExpiration)
 
 		// Memory entry with older expiration (should be replaced)
@@ -919,7 +812,7 @@ func TestReconcileStateWithExpiration_Synctest(t *testing.T) {
 		rateCache.Set("10.0.0.0", uint(5), 10*time.Second)
 
 		// Reconcile
-		ReconcileState(fileState, rateCache, botCache, verifiedCache)
+		ReconcileState(fileState, rateCache, verifiedCache)
 
 		// 192.168.0.0 should have file's value (newer expiration)
 		if v, ok := rateCache.Get("192.168.0.0"); !ok || v.(uint) != 15 {
@@ -969,12 +862,10 @@ func TestSaveAndLoadStateWithExpiration_Synctest(t *testing.T) {
 
 		// Create caches with entries expiring at different times (no cleanup interval to avoid background goroutines)
 		rateCache1 := lru.New(1*time.Hour, lru.NoExpiration)
-		botCache1 := lru.New(1*time.Hour, lru.NoExpiration)
 		verifiedCache1 := lru.New(1*time.Hour, lru.NoExpiration)
 
 		rateCache1.Set("192.168.0.0", uint(10), 5*time.Second)
 		rateCache1.Set("10.0.0.0", uint(5), 10*time.Second)
-		botCache1.Set("1.2.3.4", true, 3*time.Second)
 		verifiedCache1.Set("9.9.9.9", true, lru.NoExpiration)
 
 		// Save state
@@ -982,7 +873,6 @@ func TestSaveAndLoadStateWithExpiration_Synctest(t *testing.T) {
 			tmpFile,
 			false,
 			rateCache1,
-			botCache1,
 			verifiedCache1,
 			testLogger(),
 		)
@@ -990,23 +880,17 @@ func TestSaveAndLoadStateWithExpiration_Synctest(t *testing.T) {
 			t.Fatalf("SaveStateToFile failed: %v", err)
 		}
 
-		// Advance time by 4 seconds (bot expires, rates still valid)
+		// Advance time by 4 seconds (rates still valid)
 		time.Sleep(4 * time.Second)
 		synctest.Wait()
 
 		// Load into new caches (no cleanup interval to avoid background goroutines)
 		rateCache2 := lru.New(1*time.Hour, lru.NoExpiration)
-		botCache2 := lru.New(1*time.Hour, lru.NoExpiration)
 		verifiedCache2 := lru.New(1*time.Hour, lru.NoExpiration)
 
-		err = LoadStateFromFile(tmpFile, rateCache2, botCache2, verifiedCache2)
+		err = LoadStateFromFile(tmpFile, rateCache2, verifiedCache2)
 		if err != nil {
 			t.Fatalf("LoadStateFromFile failed: %v", err)
-		}
-
-		// Bot entry should be filtered out (expired 1 second ago)
-		if botCache2.ItemCount() != 0 {
-			t.Errorf("Expected 0 bot entries (expired), got %d", botCache2.ItemCount())
 		}
 
 		// First rate entry should be loaded (expires at 5s, we're at 4s)
@@ -1054,7 +938,6 @@ func TestReconcilePreservesNewerData_Synctest(t *testing.T) {
 			false,
 			initialCache,
 			lru.New(1*time.Hour, lru.NoExpiration),
-			lru.New(1*time.Hour, lru.NoExpiration),
 			testLogger(),
 		)
 		if err != nil {
@@ -1076,7 +959,6 @@ func TestReconcilePreservesNewerData_Synctest(t *testing.T) {
 			true, // reconcile
 			newCache,
 			lru.New(1*time.Hour, lru.NoExpiration),
-			lru.New(1*time.Hour, lru.NoExpiration),
 			testLogger(),
 		)
 		if err != nil {
@@ -1088,7 +970,6 @@ func TestReconcilePreservesNewerData_Synctest(t *testing.T) {
 		err = LoadStateFromFile(
 			tmpFile,
 			loadedCache,
-			lru.New(1*time.Hour, lru.NoExpiration),
 			lru.New(1*time.Hour, lru.NoExpiration),
 		)
 		if err != nil {

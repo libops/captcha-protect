@@ -738,7 +738,7 @@ func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
 		return
 	}
 
-	state := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
+	state := state.GetState(bc.rateCache.Items(), bc.verifiedCache.Items())
 	jsonData, err := json.Marshal(state)
 	if err != nil {
 		bc.log.Error("failed to marshal JSON", "err", err)
@@ -1126,7 +1126,6 @@ func (bc *CaptchaProtect) saveStateNow() bool {
 		bc.config.PersistentStateFile,
 		reconcile,
 		bc.rateCache,
-		bc.botCache,
 		bc.verifiedCache,
 		bc.log,
 	)
@@ -1140,7 +1139,6 @@ func (bc *CaptchaProtect) saveStateNow() bool {
 
 	bc.log.Debug("State saved successfully",
 		"rateEntries", metrics.RateEntries,
-		"botEntries", metrics.BotEntries,
 		"verifiedEntries", metrics.VerifiedEntries,
 		"lockMs", metrics.LockMs,
 		"readMs", metrics.ReadMs,
@@ -1160,7 +1158,6 @@ func (bc *CaptchaProtect) loadStateFrom(filePath string) {
 	err := state.LoadStateFromFile(
 		filePath,
 		bc.rateCache,
-		bc.botCache,
 		bc.verifiedCache,
 	)
 
@@ -1242,7 +1239,6 @@ func (bc *CaptchaProtect) reconcileStateFromFileIfChanged() {
 	err = state.ReconcileStateFromFile(
 		bc.config.PersistentStateFile,
 		bc.rateCache,
-		bc.botCache,
 		bc.verifiedCache,
 	)
 	if err != nil {

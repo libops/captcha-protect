@@ -1008,12 +1008,6 @@ func TestStatePersistence(t *testing.T) {
 				"expiration": float64(futureExpiration),
 			},
 		},
-		"bots": map[string]map[string]interface{}{
-			"5.6.7.8": {
-				"value":      false,
-				"expiration": float64(futureExpiration),
-			},
-		},
 	})
 	err := os.WriteFile(tmpFile, jsonData, 0644)
 	if err != nil {
@@ -1036,11 +1030,6 @@ func TestStatePersistence(t *testing.T) {
 		t.Error("Verified cache state not persisted correctly")
 	}
 
-	// Check bot cache
-	botVal, found := bc2.botCache.Get("5.6.7.8")
-	if !found || botVal.(bool) != false {
-		t.Error("Bot cache state not persisted correctly")
-	}
 }
 
 func TestRegisterRequestStopsIncrementingAfterRateLimitTrips(t *testing.T) {

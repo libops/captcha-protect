@@ -15,6 +15,7 @@ import (
 
 type fakeLockPIDFile struct {
 	writeErr error
+	syncErr  error
 	closeErr error
 }
 
@@ -24,6 +25,10 @@ func (f fakeLockPIDFile) WriteString(string) (int, error) {
 
 func (f fakeLockPIDFile) Close() error {
 	return f.closeErr
+}
+
+func (f fakeLockPIDFile) Sync() error {
+	return f.syncErr
 }
 
 // TestFileLock_LockUnlock tests the basic Lock and Unlock functionality.
@@ -84,6 +89,11 @@ func TestWriteLockPIDErrorsCleanUpLockFile(t *testing.T) {
 			name:    "close error",
 			file:    fakeLockPIDFile{closeErr: errors.New("close failed")},
 			wantErr: "failed to close lock file: close failed",
+		},
+		{
+			name:    "sync error",
+			file:    fakeLockPIDFile{syncErr: errors.New("sync failed")},
+			wantErr: "failed to sync lock file: sync failed",
 		},
 	}
 
