@@ -1053,6 +1053,28 @@ func TestRegisterRequestStopsIncrementingAfterRateLimitTrips(t *testing.T) {
 	}
 }
 
+func TestStatePersistenceDisabledWithoutStateFile(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+
+	bc, err := NewCaptchaProtect(context.Background(), nil, config, "test")
+	if err != nil {
+		t.Fatalf("NewCaptchaProtect failed: %v", err)
+	}
+
+	bc.registerRequest("192.168.0.0")
+	bc.markStateDirty()
+
+	if bc.currentStateDirty() != 0 {
+		t.Fatal("state dirty counter should remain disabled without a persistent state file")
+	}
+	if bc.hasUnsavedState() {
+		t.Fatal("state should not become unsaved without a persistent state file")
+	}
+}
+
 func TestSaveStateFlushesDirtyStateOnCanceledContext(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "state.json")
 	bc := newStateOnlyCaptchaProtect(tmpFile, 2)
