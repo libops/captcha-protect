@@ -16,29 +16,29 @@ import (
 )
 
 const ciRateLimit = uint(5)
+const ciRootSmokeIP = "192.0.2.10"
+const ciApp2SmokeIP = "198.51.100.10"
 
 func TestCILabelEquivalentMiddlewareBehavior(t *testing.T) {
 	bc := newCILabelEquivalentMiddleware(t, nil)
-	ip := "107.198.130.166"
 
 	for i := uint(0); i < ciRateLimit; i++ {
-		assertNoRedirect(t, bc, ip, "/")
+		assertNoRedirect(t, bc, ciRootSmokeIP, "/")
 	}
-	assertRedirect(t, bc, ip, "/", "/challenge?destination=%2F")
+	assertRedirect(t, bc, ciRootSmokeIP, "/", "/challenge?destination=%2F")
 
 	for _, route := range []string{
 		"/node/123/manifest",
 		"/node/123/book-manifest",
 		"/oai/request?foo=bar",
 	} {
-		assertNoRedirect(t, bc, ip, route)
+		assertNoRedirect(t, bc, ciRootSmokeIP, route)
 	}
 
-	appIP := "108.198.130.167"
 	for i := uint(0); i < ciRateLimit; i++ {
-		assertNoRedirect(t, bc, appIP, "/app2")
+		assertNoRedirect(t, bc, ciApp2SmokeIP, "/app2")
 	}
-	assertRedirect(t, bc, appIP, "/app2", "/challenge?destination=%2Fapp2")
+	assertRedirect(t, bc, ciApp2SmokeIP, "/app2", "/challenge?destination=%2Fapp2")
 }
 
 func TestCILabelEquivalentGooglebotParameterBehavior(t *testing.T) {
@@ -80,14 +80,14 @@ func TestPersistentStateSharingWithSynctest(t *testing.T) {
 		}()
 
 		for i := uint(0); i < writer.config.RateLimit+1; i++ {
-			writer.registerRequest("107.198.0.0")
+			writer.registerRequest("192.0.0.0")
 		}
 
 		time.Sleep(stateSaveInterval(writer.config) + StateSaveJitter + 3*time.Second)
 		synctest.Wait()
 		reader.reconcileStateFromFileIfChanged()
 
-		v, ok := reader.rateCache.Get("107.198.0.0")
+		v, ok := reader.rateCache.Get("192.0.0.0")
 		if !ok {
 			t.Fatal("expected reader instance to reconcile writer state")
 		}

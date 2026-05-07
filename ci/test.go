@@ -11,6 +11,8 @@ import (
 )
 
 const rateLimit = 5
+const rootSmokeIP = "192.0.2.10"
+const app2SmokeIP = "198.51.100.10"
 
 func main() {
 	_ = os.Remove("./tmp/state.json")
@@ -21,10 +23,10 @@ func main() {
 	waitForService("http://localhost/app2")
 
 	fmt.Println("Testing Traefik plugin smoke path...")
-	assertProtectedRoute("107.198.130.166", "http://localhost", "http://localhost/challenge?destination=%2F")
-	assertNoRedirect("107.198.130.166", "http://localhost/node/123/manifest")
-	assertNoRedirect("107.198.130.166", "http://localhost/oai/request?foo=bar")
-	assertProtectedRoute("108.198.130.167", "http://localhost/app2", "http://localhost/challenge?destination=%2Fapp2")
+	assertProtectedRoute(rootSmokeIP, "http://localhost", "http://localhost/challenge?destination=%2F")
+	assertNoRedirect(rootSmokeIP, "http://localhost/node/123/manifest")
+	assertNoRedirect(rootSmokeIP, "http://localhost/oai/request?foo=bar")
+	assertProtectedRoute(app2SmokeIP, "http://localhost/app2", "http://localhost/challenge?destination=%2Fapp2")
 
 	_ = os.Remove("./tmp/state.json")
 	fmt.Println("✓ Traefik plugin smoke test passed")
