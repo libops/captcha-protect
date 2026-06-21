@@ -1,8 +1,10 @@
 package helper
 
 import (
+	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -46,7 +48,7 @@ func TestIsIpGoodBot(t *testing.T) {
 			clientIP: "1.2.3.4",
 			goodBots: []string{"google.com"},
 			lookupAddrReturn: []string{
-				"host.example.com.",
+				"crawl.google.com.",
 			},
 			lookupAddrErr: nil,
 			lookupIPReturn: []net.IP{
@@ -97,25 +99,42 @@ func TestIsIpGoodBot(t *testing.T) {
 			lookupIPErr: nil,
 			expected:    true,
 		},
+		{
+			name:     "Client IP is not the first forward result",
+			clientIP: "1.2.3.4",
+			goodBots: []string{"example.com"},
+			lookupAddrReturn: []string{
+				"crawler.example.com.",
+			},
+			lookupIPReturn: []net.IP{
+				net.ParseIP("5.6.7.8"),
+				net.ParseIP("1.2.3.4"),
+			},
+			expected: true,
+		},
 	}
 
 	for _, tc := range tests {
-		lookupAddrFunc = func(ip string) ([]string, error) {
+		lookupAddrFunc = func(_ context.Context, ip string) ([]string, error) {
 			if ip != tc.clientIP {
 				t.Errorf("Expected lookupAddr to be called with %q; got %q", tc.clientIP, ip)
 			}
 			return tc.lookupAddrReturn, tc.lookupAddrErr
 		}
 
-		lookupIPFunc = func(host string) ([]net.IP, error) {
-			if len(tc.lookupAddrReturn) == 0 || host != tc.lookupAddrReturn[0] {
-				t.Errorf("Expected lookupIP to be called with %q; got %q", tc.lookupAddrReturn[0], host)
+		lookupIPFunc = func(_ context.Context, network, host string) ([]net.IP, error) {
+			if network != "ip" {
+				t.Errorf("Expected lookupIP network %q; got %q", "ip", network)
+			}
+			expectedHost := strings.TrimSuffix(tc.lookupAddrReturn[0], ".")
+			if host != expectedHost {
+				t.Errorf("Expected lookupIP to be called with %q; got %q", expectedHost, host)
 			}
 			return tc.lookupIPReturn, tc.lookupIPErr
 		}
 
 		t.Run(tc.name, func(t *testing.T) {
-			result := IsIpGoodBot(tc.clientIP, tc.goodBots)
+			result := IsIpGoodBot(context.Background(), tc.clientIP, tc.goodBots)
 			if result != tc.expected {
 				t.Errorf("IsIpGoodBot(%q) = %v; expected %v", tc.clientIP, result, tc.expected)
 			}
