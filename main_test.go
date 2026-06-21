@@ -1211,12 +1211,13 @@ func TestStateBookkeepingErrorBranches(t *testing.T) {
 
 func TestVerifyChallengePage(t *testing.T) {
 	tests := []struct {
-		name           string
-		provider       string
-		formValues     map[string]string
-		mockResponse   string
-		expectedStatus int
-		shouldSetCache bool
+		name             string
+		provider         string
+		formValues       map[string]string
+		mockResponse     string
+		expectedStatus   int
+		shouldSetCache   bool
+		expectedLocation string
 	}{
 		{
 			name:           "Missing captcha response",
@@ -1232,9 +1233,22 @@ func TestVerifyChallengePage(t *testing.T) {
 				"cf-turnstile-response": "valid-token",
 				"destination":           "%2Fhome",
 			},
-			mockResponse:   `{"success":true}`,
-			expectedStatus: http.StatusFound,
-			shouldSetCache: true,
+			mockResponse:     `{"success":true}`,
+			expectedStatus:   http.StatusFound,
+			shouldSetCache:   true,
+			expectedLocation: "/home",
+		},
+		{
+			name:     "Successful verification preserves literal plus",
+			provider: "turnstile",
+			formValues: map[string]string{
+				"cf-turnstile-response": "valid-token",
+				"destination":           "/Chrome%20+%20MariaDB%20",
+			},
+			mockResponse:     `{"success":true}`,
+			expectedStatus:   http.StatusFound,
+			shouldSetCache:   true,
+			expectedLocation: "/Chrome%20+%20MariaDB%20",
 		},
 		{
 			name:     "Successful verification without destination",
@@ -1242,9 +1256,10 @@ func TestVerifyChallengePage(t *testing.T) {
 			formValues: map[string]string{
 				"g-recaptcha-response": "valid-token",
 			},
-			mockResponse:   `{"success":true}`,
-			expectedStatus: http.StatusFound,
-			shouldSetCache: true,
+			mockResponse:     `{"success":true}`,
+			expectedStatus:   http.StatusFound,
+			shouldSetCache:   true,
+			expectedLocation: "/",
 		},
 		{
 			name:     "Failed verification",
@@ -1263,9 +1278,10 @@ func TestVerifyChallengePage(t *testing.T) {
 				"cf-turnstile-response": "valid-token",
 				"destination":           "%ZZ",
 			},
-			mockResponse:   `{"success":true}`,
-			expectedStatus: http.StatusFound,
-			shouldSetCache: true,
+			mockResponse:     `{"success":true}`,
+			expectedStatus:   http.StatusFound,
+			shouldSetCache:   true,
+			expectedLocation: "/",
 		},
 	}
 
@@ -1309,6 +1325,10 @@ func TestVerifyChallengePage(t *testing.T) {
 			_, found := bc.verifiedCache.Get(clientIP)
 			if found != tt.shouldSetCache {
 				t.Errorf("Expected cache set=%v, got=%v", tt.shouldSetCache, found)
+			}
+
+			if tt.expectedLocation != "" && rr.Header().Get("Location") != tt.expectedLocation {
+				t.Errorf("Expected Location %q, got %q", tt.expectedLocation, rr.Header().Get("Location"))
 			}
 		})
 	}
@@ -2106,6 +2126,8 @@ func TestNormalizeDestination(t *testing.T) {
 		{name: "empty", destination: "", want: "/"},
 		{name: "decoded local path", destination: "/home?foo=bar", want: "/home?foo=bar"},
 		{name: "encoded local path", destination: "%2Fhome%3Ffoo%3Dbar", want: "/home?foo=bar"},
+		{name: "decoded path with literal plus", destination: "/Chrome%20+%20MariaDB%20", want: "/Chrome%20+%20MariaDB%20"},
+		{name: "encoded path with literal plus", destination: "%2FChrome%2520%2B%2520MariaDB%2520", want: "/Chrome%20+%20MariaDB%20"},
 		{name: "absolute url", destination: "https://evil.com/phish", want: "/"},
 		{name: "protocol relative url", destination: "//evil.com/phish", want: "/"},
 		{name: "relative path", destination: "home", want: "/"},
