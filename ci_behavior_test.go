@@ -66,6 +66,27 @@ func TestCILabelEquivalentGooglebotParameterBehavior(t *testing.T) {
 	assertRedirect(t, protectedParams, googleIP, "/?foo=bar", "/challenge?destination=%2F%3Ffoo%3Dbar")
 }
 
+func TestCILabelEquivalentUptimeRobotBypassBehavior(t *testing.T) {
+	uptimeRobotIP := "203.0.113.10"
+
+	bypass := newCILabelEquivalentMiddleware(t, nil)
+	bypass.uptimeRobotIPs = helper.NewUptimeRobotIPs()
+	bypass.uptimeRobotIPs.Update([]string{"203.0.113.10/32"}, discardLogger())
+	bypass.config.EnableUptimeRobotBypass = "true"
+
+	for i := uint(0); i < ciRateLimit+1; i++ {
+		assertNoRedirect(t, bypass, uptimeRobotIP, "/")
+	}
+
+	disabled := newCILabelEquivalentMiddleware(t, nil)
+	disabled.uptimeRobotIPs = helper.NewUptimeRobotIPs()
+	disabled.uptimeRobotIPs.Update([]string{"203.0.113.10/32"}, discardLogger())
+	for i := uint(0); i < ciRateLimit; i++ {
+		assertNoRedirect(t, disabled, uptimeRobotIP, "/")
+	}
+	assertRedirect(t, disabled, uptimeRobotIP, "/", "/challenge?destination=%2F")
+}
+
 func TestPersistentStateSharingWithSynctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		stateFile := filepath.Join(t.TempDir(), "state.json")
@@ -133,6 +154,7 @@ func ciLabelEquivalentConfig() *Config {
 	config.ProtectParameters = "false"
 	config.GoodBots = []string{}
 	config.EnableGooglebotIPCheck = "false"
+	config.EnableUptimeRobotBypass = "false"
 	config.Mode = "regex"
 	config.ProtectRoutes = []string{"^/"}
 	config.ExcludeRoutes = []string{

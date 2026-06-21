@@ -81,6 +81,7 @@ type Config struct {
 	// Performance warning: Not recommended for sites with >1M unique visitors (see internal/state/state_stress_test.go).
 	EnableStateReconciliation string `json:"enableStateReconciliation"`
 	EnableGooglebotIPCheck    string `json:"enableGooglebotIPCheck"`
+	EnableUptimeRobotBypass   string `json:"enableUptimeRobotBypass"`
 	Mode                      string `json:"mode"`
 	PeriodSeconds             int    `json:"periodSeconds"`
 	FailureThreshold          int    `json:"failureThreshold"`
@@ -96,6 +97,7 @@ type CaptchaProtect struct {
 	verifiedCache      *lru.Cache
 	botCache           *lru.Cache
 	googlebotIPs       *helper.GooglebotIPs
+	uptimeRobotIPs     *helper.UptimeRobotIPs
 	captchaConfig      CaptchaConfig
 	exemptIps          []*net.IPNet
 	tmpl               *htemplate.Template
@@ -159,6 +161,7 @@ func CreateConfig() *Config {
 		Mode:                      "prefix",
 		EnableStateReconciliation: "false",
 		EnableGooglebotIPCheck:    "false",
+		EnableUptimeRobotBypass:   "false",
 		PeriodSeconds:             DefaultHealthCheckPeriodSeconds,
 		FailureThreshold:          DefaultHealthCheckFailureThreshold,
 	}
@@ -339,38 +342,52 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 			"failureThreshold", config.FailureThreshold)
 
 		// Start health check goroutine
-		childCtx, cancel := context.WithCancel(ctx)
-		go bc.healthCheckLoop(childCtx)
-		go func() {
-			<-ctx.Done()
-			log.Debug("Context canceled, stopping health check")
-			cancel()
-		}()
+		go bc.healthCheckLoop(ctx)
 	}
 
 	if config.PersistentStateFile != "" {
 		bc.loadState()
-		childCtx, cancel := context.WithCancel(ctx)
-		go bc.saveState(childCtx)
-		go func() {
-			<-ctx.Done()
-			bc.log.Debug("Context canceled, calling child cancel")
-			cancel()
-		}()
+		go bc.saveState(ctx)
 	}
 	if config.EnableGooglebotIPCheck == "true" {
 		log.Info("Googlebot IP check enabled")
 		bc.googlebotIPs = helper.NewGooglebotIPs()
-		childCtx, cancel := context.WithCancel(ctx)
-		go bc.googlebotIPCheckLoop(childCtx)
-		go func() {
-			<-ctx.Done()
-			log.Debug("Context canceled, stopping Googlebot IP check loop")
-			cancel()
-		}()
+		go bc.googlebotIPCheckLoop(ctx)
+	}
+	if config.EnableUptimeRobotBypass == "true" {
+		log.Info("UptimeRobot bypass enabled")
+		bc.uptimeRobotIPs = helper.NewUptimeRobotIPs()
+		go bc.uptimeRobotIPCheckLoop(ctx)
 	}
 
 	return &bc, nil
+}
+
+func (bc *CaptchaProtect) uptimeRobotIPCheckLoop(ctx context.Context) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	refresh := func() {
+		count, err := helper.RefreshUptimeRobotIPs(ctx, bc.log, bc.httpClient, bc.uptimeRobotIPs, helper.UptimeRobotIPRangeURL)
+		if err != nil {
+			bc.log.Error("failed to fetch UptimeRobot IPs", "err", err)
+			return
+		}
+		bc.log.Info("Updated UptimeRobot IPs", "count", count)
+	}
+
+	if ctx.Err() != nil {
+		return
+	}
+	refresh()
+	for {
+		select {
+		case <-ticker.C:
+			refresh()
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func (bc *CaptchaProtect) googlebotIPCheckLoop(ctx context.Context) {
@@ -378,7 +395,10 @@ func (bc *CaptchaProtect) googlebotIPCheckLoop(ctx context.Context) {
 	defer ticker.Stop()
 
 	// Initial fetch
-	count, err := helper.RefreshGoogleCrawlerIPs(bc.log, bc.httpClient, bc.googlebotIPs, helper.GoogleCrawlerIPRangeURLs)
+	if ctx.Err() != nil {
+		return
+	}
+	count, err := helper.RefreshGoogleCrawlerIPsContext(ctx, bc.log, bc.httpClient, bc.googlebotIPs, helper.GoogleCrawlerIPRangeURLs)
 	if err != nil {
 		bc.log.Error("failed to fetch googlebot ips", "err", err)
 	} else {
@@ -388,7 +408,7 @@ func (bc *CaptchaProtect) googlebotIPCheckLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			count, err := helper.RefreshGoogleCrawlerIPs(bc.log, bc.httpClient, bc.googlebotIPs, helper.GoogleCrawlerIPRangeURLs)
+			count, err := helper.RefreshGoogleCrawlerIPsContext(ctx, bc.log, bc.httpClient, bc.googlebotIPs, helper.GoogleCrawlerIPRangeURLs)
 			if err != nil {
 				bc.log.Error("failed to fetch googlebot ips", "err", err)
 				continue
@@ -463,7 +483,7 @@ func (bc *CaptchaProtect) healthCheckLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			bc.performHealthCheck()
+			bc.performHealthCheckContext(ctx)
 		case <-ctx.Done():
 			bc.log.Debug("Health check loop stopped")
 			return
@@ -474,6 +494,10 @@ func (bc *CaptchaProtect) healthCheckLoop(ctx context.Context) {
 // performHealthCheck executes a HEAD request to the primary captcha provider's JS file
 // and updates the circuit breaker state based on the response.
 func (bc *CaptchaProtect) performHealthCheck() {
+	bc.performHealthCheckContext(context.Background())
+}
+
+func (bc *CaptchaProtect) performHealthCheckContext(parent context.Context) {
 	// Perform HEAD request to primary provider's JS URL
 	req, err := http.NewRequest(http.MethodHead, bc.captchaConfig.js, nil)
 	if err != nil {
@@ -482,7 +506,7 @@ func (bc *CaptchaProtect) performHealthCheck() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
 
@@ -663,7 +687,14 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 		var body = url.Values{}
 		body.Add("secret", bc.config.SecretKey)
 		body.Add("response", response)
-		resp, err := bc.httpClient.PostForm(activeConfig.validate, body)
+		validationReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, activeConfig.validate, strings.NewReader(body.Encode()))
+		if err != nil {
+			bc.log.Error("unable to create captcha validation request", "url", activeConfig.validate, "err", err)
+			http.Error(rw, "Internal error", http.StatusInternalServerError)
+			return http.StatusInternalServerError
+		}
+		validationReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := bc.httpClient.Do(validationReq)
 		if err != nil {
 			bc.log.Error("unable to validate captcha", "url", activeConfig.validate, "err", err)
 			http.Error(rw, "Internal error", http.StatusInternalServerError)
@@ -1004,6 +1035,12 @@ func (bc *CaptchaProtect) isGoodBot(req *http.Request, clientIP string) bool {
 	if bc.config.ProtectParameters == "true" {
 		if len(req.URL.Query()) > 0 {
 			return false
+		}
+	}
+	if bc.config.EnableUptimeRobotBypass == "true" && bc.uptimeRobotIPs != nil {
+		ip := net.ParseIP(clientIP)
+		if ip != nil && bc.uptimeRobotIPs.Contains(ip) {
+			return true
 		}
 	}
 

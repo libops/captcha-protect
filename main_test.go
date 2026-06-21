@@ -1721,7 +1721,7 @@ func TestServePojJS(t *testing.T) {
 	config.SecretKey = "test-secret"
 	config.ProtectRoutes = []string{"/"}
 
-	bc, err := NewCaptchaProtect(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {}), config, "test")
+	bc, err := NewCaptchaProtect(t.Context(), http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {}), config, "test")
 	if err != nil {
 		t.Fatalf("Failed to create CaptchaProtect: %v", err)
 	}
@@ -1801,7 +1801,7 @@ func TestCircuitBreakerUsesPojProvider(t *testing.T) {
 	config.PeriodSeconds = 30
 	config.FailureThreshold = 3
 
-	bc, err := NewCaptchaProtect(context.Background(), http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {}), config, "test")
+	bc, err := NewCaptchaProtect(t.Context(), http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {}), config, "test")
 	if err != nil {
 		t.Fatalf("Failed to create CaptchaProtect: %v", err)
 	}
@@ -2089,6 +2089,45 @@ func TestGooglebotIPCheckLoopInitialFetchError(t *testing.T) {
 	if bc.googlebotIPs.Contains(net.ParseIP("203.0.113.10")) {
 		t.Fatal("did not expect googlebot IPs to update when initial fetch fails")
 	}
+}
+
+func TestUptimeRobotIPCheckLoopInitialFetch(t *testing.T) {
+	originalURL := helper.UptimeRobotIPRangeURL
+	defer func() { helper.UptimeRobotIPRangeURL = originalURL }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"prefixes":[{"ip_prefix":"203.0.113.10/32"}]}`))
+	}))
+	defer server.Close()
+	helper.UptimeRobotIPRangeURL = server.URL
+
+	bc := &CaptchaProtect{
+		log:            slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		httpClient:     server.Client(),
+		uptimeRobotIPs: helper.NewUptimeRobotIPs(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		bc.uptimeRobotIPCheckLoop(ctx)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if bc.uptimeRobotIPs.Contains(net.ParseIP("203.0.113.10")) {
+			cancel()
+			<-done
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	cancel()
+	<-done
+	t.Fatal("expected UptimeRobot IPs to be updated from initial fetch")
 }
 
 func TestServeChallengePageEscapesDestination(t *testing.T) {
