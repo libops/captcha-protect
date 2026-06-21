@@ -90,7 +90,7 @@ services:
             --providers.docker=true
             --providers.docker.network=default
             --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
-            --experimental.plugins.captcha-protect.version=v1.12.4
+            --experimental.plugins.captcha-protect.version=v1.12.5
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
@@ -130,7 +130,7 @@ services:
 | `protectFileExtensions` | `[]string`              | `""`                     | Comma-separated file extensions to protect. By default, your protected routes only protect html files. This is to prevent files like CSS/JS/img from tripping the rate limit.                    |
 | `protectHttpMethods`    | `[]string`              | `"GET,HEAD"`             | Comma-separated list of HTTP methods to protect against                                                                                                                                          |
 | `exemptIps`             | `[]string`              | `privateIPs`             | CIDR-formatted IPs that should never be challenged. Private IP ranges are always exempt.                                                                                                         |
-| `exemptUserAgents`      | `[]string`              | `""`                     | Comma-separated list of case-insensitive user agent **prefixes** to never challenge. e.g. `exemptUserAgents: edge` would never challenge useragents like "Edge/12.4 ..."                         |
+| `exemptUserAgents`      | `[]string`              | `""`                     | Comma-separated list of case-insensitive user agent substrings to never challenge. For example, `exemptUserAgents: YandexBot` exempts user agents containing `YandexBot`.                         |
 | `challengeURL`          | `string`                | `"/challenge"`           | URL where challenges are served. This will override existing routes if there is a conflict. Setting to blank will have the challenge presented on the same page that tripped the rate limit.     |
 | `challengeTmpl`         | `string`                | `"./challenge.tmpl.html"`| Path to the Go HTML template for the captcha challenge page.                                                                                                                                     |
 | `challengeStatusCode`   | `int`                   | `200`                    | HTTP Response status code to return when serving a challenge                                                                                                                                     |
