@@ -615,10 +615,11 @@ func TestIsGoodUserAgent(t *testing.T) {
 		ua               string
 		expected         bool
 	}{
-		{"Matching first prefix", []string{"Mozilla", "Google"}, "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", true},
-		{"Matching second prefix", []string{"Bing", "Edge"}, "Edge/12.0", true},
+		{"Matching first substring", []string{"Mozilla", "Google"}, "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", true},
+		{"Matching second substring", []string{"Bing", "Edge"}, "Edge/12.0", true},
+		{"Matching substring within user agent", []string{"YandexBot"}, "Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)", true},
 		{"Case insensitive", []string{"bing", "Edge"}, "BING/12.0", true},
-		{"No matching prefix", []string{"Mozilla", "Google"}, "Safari/537.36", false},
+		{"No matching substring", []string{"Mozilla", "Google"}, "Safari/537.36", false},
 		{"Empty user agent", []string{"Mozilla", "Google"}, "", false},
 		{"Empty exempt list", []string{}, "Mozilla/5.0", false},
 	}

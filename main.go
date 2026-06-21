@@ -858,8 +858,8 @@ protected:
 
 func (bc *CaptchaProtect) isGoodUserAgent(ua string) bool {
 	ua = strings.ToLower(ua)
-	for _, agentPrefix := range bc.config.ExemptUserAgents {
-		if strings.HasPrefix(ua, agentPrefix) {
+	for _, agentSubstring := range bc.config.ExemptUserAgents {
+		if strings.Contains(ua, agentSubstring) {
 			return true
 		}
 	}
