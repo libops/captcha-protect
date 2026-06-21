@@ -566,6 +566,48 @@ func TestServeHTTP(t *testing.T) {
 	}
 }
 
+func TestServeHTTPAllowsGoodBotOnFirstRequest(t *testing.T) {
+	upstreamCalled := false
+	next := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		upstreamCalled = true
+		rw.WriteHeader(http.StatusOK)
+	})
+	config := CreateConfig()
+	config.SiteKey = "test-site-key"
+	config.SecretKey = "test-secret-key"
+	config.RateLimit = 0
+	config.ProtectRoutes = []string{"/"}
+	config.GoodBots = []string{"yandex.com"}
+
+	cp, err := NewCaptchaProtect(context.Background(), next, config, "captcha-protect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookupCalled := false
+	cp.goodBotLookup = func(ctx context.Context, clientIP string, goodBots []string) bool {
+		lookupCalled = true
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("expected DNS lookup context to have a deadline")
+		}
+		return clientIP == "5.255.231.189" && len(goodBots) == 1 && goodBots[0] == "yandex.com"
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	req.RemoteAddr = "5.255.231.189:1234"
+	rw := httptest.NewRecorder()
+	cp.ServeHTTP(rw, req)
+
+	if !lookupCalled {
+		t.Fatal("expected DNS verification on the first request")
+	}
+	if !upstreamCalled {
+		t.Fatal("expected verified bot's first request to reach the upstream handler")
+	}
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rw.Code)
+	}
+}
+
 func TestIsGoodUserAgent(t *testing.T) {
 	tests := []struct {
 		name             string

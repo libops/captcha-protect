@@ -38,6 +38,7 @@ const (
 	// Default health check settings (disabled by default)
 	DefaultHealthCheckPeriodSeconds    = 0 // How often to check captcha provider health
 	DefaultHealthCheckFailureThreshold = 0 // Number of consecutive health check failures before opening circuit
+	goodBotLookupTimeout               = 2 * time.Second
 )
 
 type circuitState int
@@ -106,6 +107,7 @@ type CaptchaProtect struct {
 	stateDirty         uint64
 	stateSavedDirty    uint64
 	stateFileModTime   time.Time
+	goodBotLookup      func(context.Context, string, []string) bool
 
 	// Circuit breaker fields
 	mu                      sync.RWMutex
@@ -292,6 +294,7 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		},
 		rateCache:          lru.New(expiration, 1*time.Minute),
 		botCache:           lru.New(expiration, 1*time.Hour),
+		goodBotLookup:      helper.IsIpGoodBot,
 		verifiedCache:      lru.New(expiration, 1*time.Hour),
 		exemptIps:          ips,
 		tmpl:               tmpl,
@@ -1014,7 +1017,9 @@ func (bc *CaptchaProtect) isGoodBot(req *http.Request, clientIP string) bool {
 		}
 	}
 	if !v {
-		v = helper.IsIpGoodBot(clientIP, bc.config.GoodBots)
+		ctx, cancel := context.WithTimeout(req.Context(), goodBotLookupTimeout)
+		defer cancel()
+		v = bc.goodBotLookup(ctx, clientIP, bc.config.GoodBots)
 	}
 	bc.botCache.Set(clientIP, v, lru.DefaultExpiration)
 	return v

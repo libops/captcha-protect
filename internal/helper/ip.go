@@ -1,13 +1,14 @@
 package helper
 
 import (
+	"context"
 	"net"
 	"strings"
 )
 
 var (
-	lookupAddrFunc = net.LookupAddr
-	lookupIPFunc   = net.LookupIP
+	lookupAddrFunc = net.DefaultResolver.LookupAddr
+	lookupIPFunc   = net.DefaultResolver.LookupIP
 )
 
 func IsIpExcluded(clientIP string, exemptIps []*net.IPNet) bool {
@@ -29,39 +30,48 @@ func ParseCIDR(cidr string) (*net.IPNet, error) {
 	return ipNet, nil
 }
 
-func IsIpGoodBot(clientIP string, goodBots []string) bool {
+func IsIpGoodBot(ctx context.Context, clientIP string, goodBots []string) bool {
 	if len(goodBots) == 0 {
+		return false
+	}
+	ip := net.ParseIP(clientIP)
+	if ip == nil {
 		return false
 	}
 
 	// lookup the hostname for a given IP
-	hostname, err := lookupAddrFunc(clientIP)
-	if err != nil || len(hostname) == 0 {
+	hostnames, err := lookupAddrFunc(ctx, clientIP)
+	if err != nil || len(hostnames) == 0 {
 		return false
 	}
 
-	// then nslookup that hostname to avoid spoofing
-	resolvedIP, err := lookupIPFunc(hostname[0])
-	if err != nil || len(resolvedIP) == 0 || resolvedIP[0].String() != clientIP {
-		return false
-	}
+	for _, hostname := range hostnames {
+		hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
+		if !matchesGoodBotDomain(hostname, goodBots) {
+			continue
+		}
 
-	// get the sld
-	// will be like 194.114.135.34.bc.googleusercontent.com.
-	// notice the trailing period
-	parts := strings.Split(hostname[0], ".")
-	l := len(parts)
-	if l < 3 {
-		return false
-	}
-	tld := parts[l-2]
-	domain := parts[l-3] + "." + tld
-
-	for _, bot := range goodBots {
-		if domain == bot {
-			return true
+		// Resolve the PTR hostname forward to prevent forged reverse DNS records.
+		resolvedIPs, err := lookupIPFunc(ctx, "ip", hostname)
+		if err != nil {
+			continue
+		}
+		for _, resolvedIP := range resolvedIPs {
+			if resolvedIP.Equal(ip) {
+				return true
+			}
 		}
 	}
 
+	return false
+}
+
+func matchesGoodBotDomain(hostname string, goodBots []string) bool {
+	for _, bot := range goodBots {
+		bot = strings.ToLower(strings.Trim(strings.TrimSpace(bot), "."))
+		if bot != "" && (hostname == bot || strings.HasSuffix(hostname, "."+bot)) {
+			return true
+		}
+	}
 	return false
 }
