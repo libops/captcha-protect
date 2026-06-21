@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/http"
@@ -39,6 +40,28 @@ func TestGooglebotIPs(t *testing.T) {
 
 	if g.Contains(net.ParseIP("2001:db8::1")) {
 		t.Error("Expected 2001:db8::1 not to be a Googlebot IP")
+	}
+}
+
+func TestFetchGooglebotIPsContextHonorsCancellation(t *testing.T) {
+	requestStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := FetchGooglebotIPsContext(ctx, slog.Default(), server.Client(), server.URL)
+		done <- err
+	}()
+	<-requestStarted
+	cancel()
+
+	if err := <-done; err == nil {
+		t.Fatal("expected canceled fetch to fail")
 	}
 }
 func TestFetchGooglebotIPs(t *testing.T) {

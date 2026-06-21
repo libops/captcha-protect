@@ -73,6 +73,7 @@ services:
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.persistentStateFile: /tmp/state.json
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableStateReconciliation: "false"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableGooglebotIPCheck: "true"
+            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableUptimeRobotBypass: "false"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.periodSeconds: 30
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.failureThreshold: 3
         networks:
@@ -90,7 +91,7 @@ services:
             --providers.docker=true
             --providers.docker.network=default
             --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
-            --experimental.plugins.captcha-protect.version=v1.12.5
+            --experimental.plugins.captcha-protect.version=v1.13.0
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - /CHANGEME/TO/A/HOST/PATH/FOR/STATE/FILE:/tmp/state.json:rw
@@ -126,6 +127,7 @@ services:
 | `ipDepth`               | `int`                   | `0`                      | How deep past the last non-exempt IP to fetch the real IP from `ipForwardedHeader`. Default 0 returns the last IP in the forward header                                                          |
 | `goodBots`              | `[]string` (encouraged) | *see below*              | List of second-level domains for bots that are never challenged or rate-limited.                                                                                                                 |
 | `enableGooglebotIPCheck`| `string`.               | `"false"`                | Treat IPs coming from googlebot's known IP ranges as good bots                                                                                                                                   |
+| `enableUptimeRobotBypass` | `string`              | `"false"`                | When `"true"`, bypass challenges for IP ranges published by UptimeRobot. The ranges are refreshed every 24 hours.                                                                               |
 | `protectParameters`     | `string`                | `"false"`                | Forces rate limiting even for good bots if URL parameters are present. Useful for protecting faceted search pages.                                                                               |
 | `protectFileExtensions` | `[]string`              | `""`                     | Comma-separated file extensions to protect. By default, your protected routes only protect html files. This is to prevent files like CSS/JS/img from tripping the rate limit.                    |
 | `protectHttpMethods`    | `[]string`              | `"GET,HEAD"`             | Comma-separated list of HTTP methods to protect against                                                                                                                                          |
@@ -167,10 +169,13 @@ A good default value for `goodBots` would be:
 
 ```
 enableGooglebotIPCheck: "true"
+enableUptimeRobotBypass: "true"
 goodBots: apple.com,archive.org,duckduckgo.com,facebook.com,google.com,instagram.com,kagibot.org,linkedin.com,msn.com,openalex.org,twitter.com,x.com
 ```
 
 Since google publishes their bot IPs, we can also leverage their API to let google crawl the site unchallenged based on client IP. This can be enabled with `enableGooglebotIPCheck: "true"`
+
+UptimeRobot publishes its monitoring IP ranges at `https://api.uptimerobot.com/meta/ips`. Set `enableUptimeRobotBypass: "true"` to exempt those IPs; the list is fetched at startup and refreshed every 24 hours. The default is `"false"`.
 
 **However** if you set the config parameter `protectParameters="true"`, even good bots won't be allowed to crawl protected routes if a URL parameter is on the request (e.g. `/foo?bar=baz`). This `protectParameters` feature is meant to help protect faceted search pages.
 

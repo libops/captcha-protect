@@ -51,7 +51,8 @@ func newLockOwner(pid int) string {
 // Lock acquires an exclusive lock by creating a lock file.
 // It will retry for up to 5 seconds if the lock is held by another process.
 func (fl *FileLock) Lock() error {
-	timeout := time.After(5 * time.Second)
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -78,7 +79,7 @@ func (fl *FileLock) Lock() error {
 		// If stat failed (e.g., file removed between OpenFile and Stat)
 		// or lock is not stale, wait for next tick
 		select {
-		case <-timeout:
+		case <-timeout.C:
 			return fmt.Errorf("timeout waiting for file lock")
 		case <-ticker.C:
 			// Continue to next iteration

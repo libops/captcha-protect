@@ -78,6 +78,11 @@ func (g *GooglebotIPs) Contains(ip net.IP) bool {
 // FetchGooglebotIPs fetches the list of Googlebot IPs from Google's official endpoint,
 // parses the JSON response, and returns a slice of CIDR strings.
 func FetchGooglebotIPs(log *slog.Logger, httpClient *http.Client, url string) ([]string, error) {
+	return FetchGooglebotIPsContext(context.Background(), log, httpClient, url)
+}
+
+// FetchGooglebotIPsContext fetches Googlebot IPs and cancels the request with ctx.
+func FetchGooglebotIPsContext(parent context.Context, log *slog.Logger, httpClient *http.Client, url string) ([]string, error) {
 	log.Debug("Fetching Googlebot IPs")
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -85,7 +90,7 @@ func FetchGooglebotIPs(log *slog.Logger, httpClient *http.Client, url string) ([
 		return nil, fmt.Errorf("failed to create Googlebot IP request: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
 
@@ -121,13 +126,18 @@ func FetchGooglebotIPs(log *slog.Logger, httpClient *http.Client, url string) ([
 // FetchGoogleCrawlerIPs fetches crawler IP ranges from multiple Google-managed endpoints,
 // then returns a canonical, unique list where broader prefixes replace narrower prefixes.
 func FetchGoogleCrawlerIPs(log *slog.Logger, httpClient *http.Client, urls []string) ([]string, error) {
+	return FetchGoogleCrawlerIPsContext(context.Background(), log, httpClient, urls)
+}
+
+// FetchGoogleCrawlerIPsContext fetches all configured Google crawler ranges with cancellation.
+func FetchGoogleCrawlerIPsContext(ctx context.Context, log *slog.Logger, httpClient *http.Client, urls []string) ([]string, error) {
 	if len(urls) == 0 {
 		return nil, nil
 	}
 
 	allCIDRs := make([]string, 0)
 	for _, url := range urls {
-		cidrs, err := FetchGooglebotIPs(log, httpClient, url)
+		cidrs, err := FetchGooglebotIPsContext(ctx, log, httpClient, url)
 		if err != nil {
 			return nil, err
 		}
@@ -140,7 +150,12 @@ func FetchGoogleCrawlerIPs(log *slog.Logger, httpClient *http.Client, urls []str
 // RefreshGoogleCrawlerIPs fetches crawler IPs from all configured URLs and updates
 // the provided GooglebotIPs set. Returns the number of CIDRs loaded.
 func RefreshGoogleCrawlerIPs(log *slog.Logger, httpClient *http.Client, target *GooglebotIPs, urls []string) (int, error) {
-	cidrs, err := FetchGoogleCrawlerIPs(log, httpClient, urls)
+	return RefreshGoogleCrawlerIPsContext(context.Background(), log, httpClient, target, urls)
+}
+
+// RefreshGoogleCrawlerIPsContext refreshes the active crawler ranges with cancellation.
+func RefreshGoogleCrawlerIPsContext(ctx context.Context, log *slog.Logger, httpClient *http.Client, target *GooglebotIPs, urls []string) (int, error) {
+	cidrs, err := FetchGoogleCrawlerIPsContext(ctx, log, httpClient, urls)
 	if err != nil {
 		return 0, err
 	}
