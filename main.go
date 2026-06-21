@@ -705,7 +705,10 @@ func normalizeDestination(destination string) string {
 		return "/"
 	}
 
-	unescaped, err := url.QueryUnescape(destination)
+	// The form parser has already applied application/x-www-form-urlencoded
+	// decoding. Use path semantics for destinations that are still escaped so
+	// literal plus signs are not decoded a second time as spaces.
+	unescaped, err := url.PathUnescape(destination)
 	if err == nil && unescaped != destination {
 		if sanitized := sanitizeDestination(unescaped); sanitized != "/" || unescaped == "/" {
 			return sanitized
