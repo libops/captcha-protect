@@ -107,6 +107,41 @@ services:
             nginx:
                 condition: service_started
 ```
+
+### Protecting multiple services
+
+Define `captcha-protect` once and attach that same named middleware to every router that should use it. For example, if the full `traefik.http.middlewares.captcha-protect.*` configuration is on the `nginx` service above, another service only needs to reference it:
+
+```yaml
+services:
+    nginx:
+        labels:
+            traefik.http.routers.nginx.middlewares: captcha-protect@docker
+            # Define all traefik.http.middlewares.captcha-protect.* labels here.
+
+    another-service:
+        labels:
+            traefik.enable: true
+            traefik.http.routers.another-service.middlewares: captcha-protect@docker
+            # Do not repeat the middleware definition here.
+```
+
+If a router already uses other middleware, add `captcha-protect@docker` to its comma-separated middleware list.
+
+Traefik creates a separate plugin instance for each router, even when several routers reference the same named middleware. Each instance has its own in-memory rate, verification, and bot caches. This behavior is described in [issue #52](https://github.com/libops/captcha-protect/issues/52) and is why state reconciliation exists.
+
+Set `enableStateReconciliation: "true"` when the middleware is attached to more than one router and those instances use the same `persistentStateFile`. Also enable it for every separately named middleware definition or Traefik replica that writes to that file. All instances must see the same state file and its adjacent `.lock` file. Reconciliation synchronizes file-backed rate and verified state so that a challenge completed through one router is recognized by the others.
+
+#### Memory considerations
+
+Reconciliation does not turn the per-router caches into shared memory. Steady-state cache memory therefore grows approximately with the number of routers: two router instances holding the same state use roughly twice the cache memory. Bot lookup cache entries are also duplicated per router and are not persisted.
+
+The cache implementation is expiration-based; despite its `lru` import alias in the source, it does not enforce a least-recently-used entry limit, maximum entry count, or memory limit. Enough distinct client IPs and subnets within the configured `window` can therefore consume substantial memory. A longer `window` retains entries longer. More-specific subnet masks, such as a larger `ipv4subnetMask`, can create more distinct rate-cache entries for the same traffic. `rateLimit` controls when a subnet is challenged; it does not cap the number of cached subnets. Verified-client and bot caches are keyed by individual IP. Account for all protected routers when sizing Traefik memory and monitor process memory under representative traffic. See [issue #95](https://github.com/libops/captcha-protect/issues/95) for the discussion that prompted this guidance.
+
+Reconciliation temporarily needs additional memory to read and decode the complete state file and to snapshot cache entries, so peak memory is higher than the steady-state cache size. The `memory` values in `state.json` estimate one copy of the persisted rate and verified caches only; they exclude bot-cache entries, Go runtime and map overhead, other plugin instances, and temporary reconciliation allocations. They do not represent total process or peak memory. Avoid reconciliation for state approaching one million verified visitors: it can take 5-8 seconds at that scale and competes with the 10-second save interval.
+
+There is currently no shared in-process or external cache backend that removes this per-router duplication. For installations with many sites, an alternative is to route them through one lightweight proxy service and attach `captcha-protect` only to that proxy's router. The proxy can then route accepted requests to the respective backend services. This reduces the number of captcha-protect instances and cache copies, but makes the proxy part of the request path and requires it to preserve the original client IP correctly.
+
 ### Config options
 
 | **Parameter**           | **Type (Required)**     | **Default**              | **Description**                                                                                                                                                                                  |
@@ -120,9 +155,9 @@ services:
 | `periodSeconds`         | `int`                   | `0`                      | Health check interval (in seconds) for the primary captcha provider. The circuit breaker uses this to detect provider outages.                                                                   |
 | `failureThreshold`      | `int`                   | `0`                      | Number of consecutive health check failures before the circuit breaker opens and switches to proof-of-javascript fallback.                                                                       |
 | `rateLimit`             | `uint`                  | `20`                     | Maximum requests allowed from a subnet before a challenge is triggered.                                                                                                                          |
-| `window`                | `int`                   | `86400`                  | Duration (in seconds) for monitoring requests per subnet.                                                                                                                                        |
-| `ipv4subnetMask`        | `int`                   | `16`                     | CIDR subnet mask to group IPv4 addresses for rate limiting.                                                                                                                                      |
-| `ipv6subnetMask`        | `int`                   | `64`                     | CIDR subnet mask to group IPv6 addresses for rate limiting.                                                                                                                                      |
+| `window`                | `int`                   | `86400`                  | Duration (in seconds) for monitoring requests per subnet and retaining cache entries. Longer windows can increase memory use.                                                                    |
+| `ipv4subnetMask`        | `int`                   | `16`                     | CIDR subnet mask to group IPv4 addresses for rate limiting. More-specific (larger) masks can create more rate-cache entries and increase memory use.                                              |
+| `ipv6subnetMask`        | `int`                   | `64`                     | CIDR subnet mask to group IPv6 addresses for rate limiting. More-specific (larger) masks can create more rate-cache entries and increase memory use.                                              |
 | `ipForwardedHeader`     | `string`                | `""`                     | Header to check for the original client IP if Traefik is behind a load balancer. Only set this when Traefik receives the header from a trusted proxy/load balancer; otherwise clients can spoof their IP. |
 | `ipDepth`               | `int`                   | `0`                      | How deep past the last non-exempt IP to fetch the real IP from `ipForwardedHeader`. Default 0 returns the last IP in the forward header                                                          |
 | `goodBots`              | `[]string` (encouraged) | *see below*              | List of second-level domains for bots that are never challenged or rate-limited.                                                                                                                 |
@@ -139,7 +174,7 @@ services:
 | `enableStatsPage`       | `string`                | `"false"`                | Allows `exemptIps` to access `/captcha-protect/stats` to monitor the rate limiter.                                                                                                               |
 | `logLevel`              | `string`                | `"INFO"`                 | Log level for the middleware. Options: `ERROR`, `WARNING`, `INFO`, or `DEBUG`.                                                                                                                   |
 | `persistentStateFile`   | `string`                | `""`                     | File path to persist rate limiter and verified challenge state across Traefik restarts. When unset, no state load/save goroutine is started. Dirty local state is saved about every 60s plus 0-2s jitter. Derived bot lookup cache entries are not persisted. In Docker, mount this file from the host. |
-| `enableStateReconciliation` | `string`            | `"false"`                | When `"true"`, polls the shared state file for changes and merges newer disk state into memory, then reconciles again before dirty snapshots are saved. Enable for multi-instance deployments sharing state. Dirty shared state is saved about every 10s plus 0-2s jitter. |
+| `enableStateReconciliation` | `string`            | `"false"`                | When `"true"`, polls the shared state file for changes and merges newer disk state into memory, then reconciles again before dirty snapshots are saved. Enable when more than one router, named middleware definition, or Traefik replica writes to the same state file. Traefik creates a separate plugin instance and in-memory cache per router, even when routers reuse one named middleware. Dirty shared state is saved about every 10s plus 0-2s jitter; see [Protecting multiple services](#protecting-multiple-services). |
 
 ### Circuit Breaker (failover if a captcha provider is unavailable)
 
