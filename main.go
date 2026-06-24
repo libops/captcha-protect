@@ -30,8 +30,6 @@ import (
 const (
 	// StateSaveInterval is how often local persistent state is written to disk.
 	StateSaveInterval = 60 * time.Second
-	// StateReconciliationSaveInterval is the faster save cadence used when multiple instances share state.
-	StateReconciliationSaveInterval = 10 * time.Second
 	// StateSaveJitter is the maximum random jitter added to save interval to prevent thundering herd
 	StateSaveJitter = 2 * time.Second
 
@@ -50,10 +48,7 @@ const (
 )
 
 type Config struct {
-	RateLimit         uint   `json:"rateLimit"`
 	Window            int64  `json:"window"`
-	IPv4SubnetMask    int    `json:"ipv4subnetMask"`
-	IPv6SubnetMask    int    `json:"ipv6subnetMask"`
 	IPForwardedHeader string `json:"ipForwardedHeader"`
 	IPDepth           int    `json:"ipDepth"`
 	// ProtectParameters is a string instead of bool due to Traefik's label parsing limitations
@@ -72,20 +67,14 @@ type Config struct {
 	SiteKey               string   `json:"siteKey"`
 	SecretKey             string   `json:"secretKey"`
 	// EnableStatsPage is a string instead of bool due to Traefik's label parsing limitations
-	EnableStatsPage     string `json:"enableStatsPage"`
-	LogLevel            string `json:"loglevel,omitempty"`
-	PersistentStateFile string `json:"persistentStateFile"`
-	// EnableStateReconciliation is a string instead of bool due to Traefik's label parsing limitations
-	// When enabled, the plugin will read and merge state from disk before each save to prevent
-	// multiple instances from overwriting each other's data. This adds extra I/O overhead.
-	// Only enable this if running multiple plugin instances sharing the same state file.
-	// Performance warning: Not recommended for sites with >1M unique visitors (see internal/state/state_stress_test.go).
-	EnableStateReconciliation string `json:"enableStateReconciliation"`
-	EnableGooglebotIPCheck    string `json:"enableGooglebotIPCheck"`
-	EnableUptimeRobotBypass   string `json:"enableUptimeRobotBypass"`
-	Mode                      string `json:"mode"`
-	PeriodSeconds             int    `json:"periodSeconds"`
-	FailureThreshold          int    `json:"failureThreshold"`
+	EnableStatsPage         string `json:"enableStatsPage"`
+	LogLevel                string `json:"loglevel,omitempty"`
+	PersistentStateFile     string `json:"persistentStateFile"`
+	EnableGooglebotIPCheck  string `json:"enableGooglebotIPCheck"`
+	EnableUptimeRobotBypass string `json:"enableUptimeRobotBypass"`
+	Mode                    string `json:"mode"`
+	PeriodSeconds           int    `json:"periodSeconds"`
+	FailureThreshold        int    `json:"failureThreshold"`
 }
 
 type CaptchaProtect struct {
@@ -94,7 +83,6 @@ type CaptchaProtect struct {
 	config             *Config
 	log                *slog.Logger
 	httpClient         *http.Client
-	rateCache          *lru.Cache
 	verifiedCache      *lru.Cache
 	botCache           *lru.Cache
 	googlebotIPs       *helper.GooglebotIPs
@@ -102,14 +90,11 @@ type CaptchaProtect struct {
 	captchaConfig      CaptchaConfig
 	exemptIps          []*net.IPNet
 	tmpl               *htemplate.Template
-	ipv4Mask           net.IPMask
-	ipv6Mask           net.IPMask
 	protectRoutesRegex []*regexp.Regexp
 	excludeRoutesRegex []*regexp.Regexp
 	stateMu            sync.Mutex
 	stateDirty         uint64
 	stateSavedDirty    uint64
-	stateFileModTime   time.Time
 	goodBotLookup      func(context.Context, string, []string) bool
 
 	// Circuit breaker fields
@@ -141,32 +126,28 @@ type challengeData struct {
 
 func CreateConfig() *Config {
 	return &Config{
-		RateLimit:                 20,
-		Window:                    86400,
-		IPv4SubnetMask:            16,
-		IPv6SubnetMask:            64,
-		IPForwardedHeader:         "",
-		ProtectParameters:         "false",
-		ProtectRoutes:             []string{},
-		ExcludeRoutes:             []string{},
-		ProtectHttpMethods:        []string{},
-		ProtectFileExtensions:     []string{},
-		GoodBots:                  []string{},
-		ExemptIPs:                 []string{},
-		ExemptUserAgents:          []string{},
-		ChallengeURL:              "/challenge",
-		ChallengeTmpl:             "challenge.tmpl.html",
-		ChallengeStatusCode:       0,
-		EnableStatsPage:           "false",
-		LogLevel:                  "INFO",
-		IPDepth:                   0,
-		CaptchaProvider:           "turnstile",
-		Mode:                      "prefix",
-		EnableStateReconciliation: "false",
-		EnableGooglebotIPCheck:    "false",
-		EnableUptimeRobotBypass:   "false",
-		PeriodSeconds:             DefaultHealthCheckPeriodSeconds,
-		FailureThreshold:          DefaultHealthCheckFailureThreshold,
+		Window:                  86400,
+		IPForwardedHeader:       "",
+		ProtectParameters:       "false",
+		ProtectRoutes:           []string{},
+		ExcludeRoutes:           []string{},
+		ProtectHttpMethods:      []string{},
+		ProtectFileExtensions:   []string{},
+		GoodBots:                []string{},
+		ExemptIPs:               []string{},
+		ExemptUserAgents:        []string{},
+		ChallengeURL:            "/challenge",
+		ChallengeTmpl:           "challenge.tmpl.html",
+		ChallengeStatusCode:     0,
+		EnableStatsPage:         "false",
+		LogLevel:                "INFO",
+		IPDepth:                 0,
+		CaptchaProvider:         "turnstile",
+		Mode:                    "prefix",
+		EnableGooglebotIPCheck:  "false",
+		EnableUptimeRobotBypass: "false",
+		PeriodSeconds:           DefaultHealthCheckPeriodSeconds,
+		FailureThreshold:        DefaultHealthCheckFailureThreshold,
 	}
 }
 
@@ -232,10 +213,10 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	config.ExemptUserAgents = ua
 
 	if config.ChallengeURL == "/" {
-		return nil, fmt.Errorf("your challenge URL can not be the entire site. Default is `/challenge`. A blank value will have challenges presented on the visit that trips the rate limit")
+		return nil, fmt.Errorf("your challenge URL can not be the entire site. Default is `/challenge`. A blank value will have challenges presented on the visit that triggers protection")
 	}
 
-	// when challenging on the same page that tripped the rate limiter
+	// when challenging on the same page that triggered protection
 	// add a url parameter to detect on
 	if config.ChallengeURL == "" {
 		config.ChallengeURL = "?challenge=true"
@@ -298,7 +279,6 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		rateCache:          lru.New(expiration, 1*time.Minute),
 		botCache:           lru.New(expiration, 1*time.Hour),
 		goodBotLookup:      helper.IsIpGoodBotContext,
 		verifiedCache:      lru.New(expiration, 1*time.Hour),
@@ -315,16 +295,6 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		if bc.ChallengeOnPage() {
 			bc.config.ChallengeStatusCode = http.StatusTooManyRequests
 		}
-	}
-
-	err := bc.SetIpv4Mask(config.IPv4SubnetMask)
-	if err != nil {
-		return nil, err
-	}
-
-	err = bc.SetIpv6Mask(config.IPv6SubnetMask)
-	if err != nil {
-		return nil, err
 	}
 
 	// set the captcha config based on the provider
@@ -577,7 +547,7 @@ func (bc *CaptchaProtect) recordHealthCheckFailure() {
 }
 
 func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	clientIP, ipRange := bc.getClientIP(req)
+	clientIP := bc.getClientIP(req)
 
 	// Serve proof-of-javascript JS
 	if req.URL.Path == "/captcha-protect-poj.js" {
@@ -612,12 +582,6 @@ func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if !bc.shouldApply(req, clientIP) {
-		bc.next.ServeHTTP(rw, req)
-		return
-	}
-	bc.registerRequest(ipRange)
-
-	if !bc.trippedRateLimit(ipRange) {
 		bc.next.ServeHTTP(rw, req)
 		return
 	}
@@ -843,7 +807,7 @@ func (bc *CaptchaProtect) serveStatsPage(rw http.ResponseWriter, ip string) {
 		return
 	}
 
-	state := state.GetState(bc.rateCache.Items(), bc.verifiedCache.Items())
+	state := state.GetState(bc.verifiedCache.Items())
 	jsonData, err := json.Marshal(state)
 	if err != nil {
 		bc.log.Error("failed to marshal JSON", "err", err)
@@ -988,36 +952,7 @@ protected:
 	return false
 }
 
-func (bc *CaptchaProtect) trippedRateLimit(ip string) bool {
-	v, ok := bc.rateCache.Get(ip)
-	if !ok {
-		bc.log.Error("IP not found, but should already be set", "ip", ip)
-		return false
-	}
-	return v.(uint) > bc.config.RateLimit
-}
-
-func (bc *CaptchaProtect) registerRequest(ip string) {
-	err := bc.rateCache.Add(ip, uint(1), lru.DefaultExpiration)
-	if err == nil {
-		bc.markStateDirty()
-		return
-	}
-
-	v, ok := bc.rateCache.Get(ip)
-	if ok && v.(uint) > bc.config.RateLimit {
-		return
-	}
-
-	_, err = bc.rateCache.IncrementUint(ip, uint(1))
-	if err != nil {
-		bc.log.Error("unable to set rate cache", "ip", ip, "err", err)
-		return
-	}
-	bc.markStateDirty()
-}
-
-func (bc *CaptchaProtect) getClientIP(req *http.Request) (string, string) {
+func (bc *CaptchaProtect) getClientIP(req *http.Request) string {
 	ip := req.Header.Get(bc.config.IPForwardedHeader)
 	if bc.config.IPForwardedHeader != "" && ip != "" {
 		components := strings.Split(ip, ",")
@@ -1053,48 +988,7 @@ func (bc *CaptchaProtect) getClientIP(req *http.Request) (string, string) {
 		}
 	}
 
-	return bc.ParseIp(ip)
-}
-
-func (bc *CaptchaProtect) ParseIp(ip string) (string, string) {
-	parsedIP := net.ParseIP(ip)
-	if parsedIP == nil {
-		return ip, ip
-	}
-
-	// For IPv4 addresses
-	if parsedIP.To4() != nil {
-		subnet := parsedIP.Mask(bc.ipv4Mask)
-		return ip, subnet.String()
-	}
-
-	// For IPv6 addresses
-	if parsedIP.To16() != nil {
-		subnet := parsedIP.Mask(bc.ipv6Mask)
-		return ip, subnet.String()
-	}
-
-	bc.log.Warn("Unknown ip version", "ip", ip)
-
-	return ip, ip
-}
-
-func (bc *CaptchaProtect) SetIpv4Mask(m int) error {
-	if m < 8 || m > 32 {
-		return fmt.Errorf("invalid ipv4 mask: %d. Must be between 8 and 32", m)
-	}
-	bc.ipv4Mask = net.CIDRMask(m, 32)
-
-	return nil
-}
-
-func (bc *CaptchaProtect) SetIpv6Mask(m int) error {
-	if m < 8 || m > 128 {
-		return fmt.Errorf("invalid ipv6 mask: %d. Must be between 8 and 128", m)
-	}
-	bc.ipv6Mask = net.CIDRMask(m, 128)
-
-	return nil
+	return ip
 }
 
 func (bc *CaptchaProtect) isGoodBot(req *http.Request, clientIP string) bool {
@@ -1151,7 +1045,7 @@ func (c *Config) ParseHttpMethods(log *slog.Logger) {
 func (bc *CaptchaProtect) saveState(ctx context.Context) {
 	// Add random jitter to prevent multiple instances from trying to save simultaneously
 	jitter := stateSaveJitter()
-	baseInterval := stateSaveInterval(bc.config)
+	baseInterval := StateSaveInterval
 	interval := baseInterval + jitter
 
 	bc.log.Debug("State save configured", "baseInterval", baseInterval, "jitter", jitter, "actualInterval", interval)
@@ -1169,16 +1063,11 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 		bc.log.Error("unable to save state, could not close state file", "stateFile", bc.config.PersistentStateFile, "err", err)
 		return
 	}
-	bc.refreshStateFileModTime()
-
 	lastSave := time.Time{}
 
 	for {
 		select {
 		case <-ticker.C:
-			if bc.config.EnableStateReconciliation == "true" {
-				bc.reconcileStateFromFileIfChanged()
-			}
 			if !bc.hasUnsavedState() {
 				continue
 			}
@@ -1191,9 +1080,6 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 			}
 
 		case <-ctx.Done():
-			if bc.config.EnableStateReconciliation == "true" {
-				bc.reconcileStateFromFileIfChanged()
-			}
 			if bc.hasUnsavedState() {
 				bc.log.Debug("Context cancelled, running saveState before shutdown")
 				bc.saveStateNow()
@@ -1201,13 +1087,6 @@ func (bc *CaptchaProtect) saveState(ctx context.Context) {
 			return
 		}
 	}
-}
-
-func stateSaveInterval(config *Config) time.Duration {
-	if config.EnableStateReconciliation == "true" {
-		return StateReconciliationSaveInterval
-	}
-	return StateSaveInterval
 }
 
 func stateSaveJitter() time.Duration {
@@ -1240,13 +1119,10 @@ func fallbackStateSaveJitter(maxMillis int64) time.Duration {
 
 // saveStateNow performs an immediate state save using the state package.
 func (bc *CaptchaProtect) saveStateNow() bool {
-	reconcile := bc.config.EnableStateReconciliation == "true"
 	dirtyAtStart := bc.currentStateDirty()
 
 	metrics, err := state.SaveStateToFileWithMetrics(
 		bc.config.PersistentStateFile,
-		reconcile,
-		bc.rateCache,
 		bc.verifiedCache,
 		bc.log,
 	)
@@ -1256,14 +1132,10 @@ func (bc *CaptchaProtect) saveStateNow() bool {
 		return false
 	}
 	bc.markStateSaved(dirtyAtStart)
-	bc.refreshStateFileModTime()
 
 	bc.log.Debug("State saved successfully",
-		"rateEntries", metrics.RateEntries,
 		"verifiedEntries", metrics.VerifiedEntries,
 		"lockMs", metrics.LockMs,
-		"readMs", metrics.ReadMs,
-		"reconcileMs", metrics.ReconcileMs,
 		"marshalMs", metrics.MarshalMs,
 		"writeMs", metrics.WriteMs,
 		"totalMs", metrics.TotalMs,
@@ -1278,7 +1150,6 @@ func (bc *CaptchaProtect) loadState() {
 func (bc *CaptchaProtect) loadStateFrom(filePath string) {
 	err := state.LoadStateFromFile(
 		filePath,
-		bc.rateCache,
 		bc.verifiedCache,
 	)
 
@@ -1288,7 +1159,6 @@ func (bc *CaptchaProtect) loadStateFrom(filePath string) {
 	}
 
 	bc.log.Info("Loaded previous state")
-	bc.refreshStateFileModTimeFrom(filePath)
 }
 
 func (bc *CaptchaProtect) markStateDirty() {
@@ -1328,52 +1198,6 @@ func (bc *CaptchaProtect) markStateSaved(dirty uint64) {
 	bc.stateMu.Lock()
 	defer bc.stateMu.Unlock()
 	bc.stateSavedDirty = dirty
-}
-
-func (bc *CaptchaProtect) refreshStateFileModTime() {
-	bc.refreshStateFileModTimeFrom(bc.config.PersistentStateFile)
-}
-
-func (bc *CaptchaProtect) refreshStateFileModTimeFrom(filePath string) {
-	info, err := os.Stat(filePath)
-	if err != nil {
-		return
-	}
-	bc.stateMu.Lock()
-	defer bc.stateMu.Unlock()
-	bc.stateFileModTime = info.ModTime()
-}
-
-func (bc *CaptchaProtect) reconcileStateFromFileIfChanged() {
-	info, err := os.Stat(bc.config.PersistentStateFile)
-	if err != nil {
-		return
-	}
-	modTime := info.ModTime()
-	bc.stateMu.Lock()
-	lastModTime := bc.stateFileModTime
-	bc.stateMu.Unlock()
-	if !lastModTime.IsZero() && !modTime.After(lastModTime) {
-		return
-	}
-
-	err = state.ReconcileStateFromFile(
-		bc.config.PersistentStateFile,
-		bc.rateCache,
-		bc.verifiedCache,
-	)
-	if err != nil {
-		bc.log.Warn("failed to reconcile state file", "err", err)
-		return
-	}
-
-	if info, err := os.Stat(bc.config.PersistentStateFile); err == nil {
-		modTime = info.ModTime()
-	}
-	bc.stateMu.Lock()
-	bc.stateFileModTime = modTime
-	bc.stateMu.Unlock()
-	bc.log.Debug("Reconciled newer state file")
 }
 
 func (bc *CaptchaProtect) ChallengeOnPage() bool {
