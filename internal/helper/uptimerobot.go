@@ -17,11 +17,25 @@ const maxUptimeRobotIPResponseSize = 1 << 20
 var UptimeRobotIPRangeURL = "https://api.uptimerobot.com/meta/ips"
 
 // UptimeRobotIPs is a thread-safe set of UptimeRobot IP ranges.
-type UptimeRobotIPs = GooglebotIPs
+type UptimeRobotIPs struct {
+	ranges *GooglebotIPs
+}
 
 // NewUptimeRobotIPs creates an empty UptimeRobot IP range set.
 func NewUptimeRobotIPs() *UptimeRobotIPs {
-	return NewGooglebotIPs()
+	return &UptimeRobotIPs{
+		ranges: NewGooglebotIPs(),
+	}
+}
+
+// Update parses a slice of CIDR strings and replaces the existing IP ranges with the new ones.
+func (u *UptimeRobotIPs) Update(cidrs []string, log *slog.Logger) {
+	u.ranges.Update(cidrs, log)
+}
+
+// Contains checks if the given IP address is within any stored UptimeRobot IP range.
+func (u *UptimeRobotIPs) Contains(ip net.IP) bool {
+	return u.ranges.Contains(ip)
 }
 
 type uptimeRobotIPsJSON struct {

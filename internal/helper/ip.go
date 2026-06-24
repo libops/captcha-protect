@@ -30,7 +30,11 @@ func ParseCIDR(cidr string) (*net.IPNet, error) {
 	return ipNet, nil
 }
 
-func IsIpGoodBot(ctx context.Context, clientIP string, goodBots []string) bool {
+func IsIpGoodBot(clientIP string, goodBots []string) bool {
+	return IsIpGoodBotContext(context.Background(), clientIP, goodBots)
+}
+
+func IsIpGoodBotContext(ctx context.Context, clientIP string, goodBots []string) bool {
 	if len(goodBots) == 0 {
 		return false
 	}

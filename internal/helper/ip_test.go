@@ -134,7 +134,7 @@ func TestIsIpGoodBot(t *testing.T) {
 		}
 
 		t.Run(tc.name, func(t *testing.T) {
-			result := IsIpGoodBot(context.Background(), tc.clientIP, tc.goodBots)
+			result := IsIpGoodBotContext(context.Background(), tc.clientIP, tc.goodBots)
 			if result != tc.expected {
 				t.Errorf("IsIpGoodBot(%q) = %v; expected %v", tc.clientIP, result, tc.expected)
 			}

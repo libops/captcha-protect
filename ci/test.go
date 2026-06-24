@@ -18,15 +18,18 @@ func main() {
 	_ = os.Remove("./tmp/state.json")
 
 	fmt.Println("Bringing traefik/nginx online")
-	runCommand("docker", "compose", "up", "-d")
+	runCommand("docker", "compose", "down", "--remove-orphans")
+	runCommand("docker", "compose", "up", "-d", "--force-recreate")
 	waitForService("http://localhost")
 	waitForService("http://localhost/app2")
+	assertTraefikPluginLogsClean()
 
 	fmt.Println("Testing Traefik plugin smoke path...")
 	assertProtectedRoute(rootSmokeIP, "http://localhost", "http://localhost/challenge?destination=%2F")
 	assertNoRedirect(rootSmokeIP, "http://localhost/node/123/manifest")
 	assertNoRedirect(rootSmokeIP, "http://localhost/oai/request?foo=bar")
 	assertProtectedRoute(app2SmokeIP, "http://localhost/app2", "http://localhost/challenge?destination=%2Fapp2")
+	assertTraefikPluginLogsClean()
 
 	_ = os.Remove("./tmp/state.json")
 	fmt.Println("✓ Traefik plugin smoke test passed")
@@ -115,18 +118,58 @@ func httpRequest(ip, url string) (string, error) {
 	return strings.TrimSpace(location.String()), nil
 }
 
+func assertTraefikPluginLogsClean() {
+	output, err := commandOutput("docker", "compose", "logs", "--no-color", "traefik")
+	if err != nil {
+		slog.Error("Failed to inspect Traefik logs", "err", err, "output", output)
+		os.Exit(1)
+	}
+
+	if failure, found := traefikPluginLogFailure(output); found {
+		slog.Error("Traefik plugin load failure detected", "failure", failure, "logs", output)
+		os.Exit(1)
+	}
+}
+
+func traefikPluginLogFailure(output string) (string, bool) {
+	failures := []string{
+		"Plugins are disabled",
+		"failed to create Yaegi interpreter",
+		"failed to import plugin code",
+		"cannot use type",
+		"cannot define new methods",
+	}
+	for _, failure := range failures {
+		if strings.Contains(output, failure) {
+			return failure, true
+		}
+	}
+	return "", false
+}
+
+func commandOutput(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...) // #nosec G204 -- CI smoke test invokes fixed docker compose commands.
+	cmd.Env = testCommandEnv()
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
 func runCommand(name string, args ...string) {
 	cmd := exec.Command(name, args...) // #nosec G204 -- CI smoke test invokes fixed docker compose commands.
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), fmt.Sprintf("RATE_LIMIT=%d", rateLimit))
-
-	if traefikTag := os.Getenv("TRAEFIK_TAG"); traefikTag != "" {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("TRAEFIK_TAG=%s", traefikTag))
-	}
+	cmd.Env = testCommandEnv()
 
 	if err := cmd.Run(); err != nil {
 		slog.Error("Command failed", "err", err)
 		os.Exit(1)
 	}
+}
+
+func testCommandEnv() []string {
+	env := append(os.Environ(), fmt.Sprintf("RATE_LIMIT=%d", rateLimit))
+	if traefikTag := os.Getenv("TRAEFIK_TAG"); traefikTag != "" {
+		env = append(env, fmt.Sprintf("TRAEFIK_TAG=%s", traefikTag))
+	}
+	return env
 }

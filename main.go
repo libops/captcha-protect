@@ -39,6 +39,7 @@ const (
 	DefaultHealthCheckPeriodSeconds    = 0 // How often to check captcha provider health
 	DefaultHealthCheckFailureThreshold = 0 // Number of consecutive health check failures before opening circuit
 	goodBotLookupTimeout               = 2 * time.Second
+	maxCaptchaChallengeAge             = 5 * time.Minute
 )
 
 type circuitState int
@@ -125,7 +126,9 @@ type CaptchaConfig struct {
 }
 
 type captchaResponse struct {
-	Success bool `json:"success"`
+	Success     bool   `json:"success"`
+	Hostname    string `json:"hostname"`
+	ChallengeTS string `json:"challenge_ts"`
 }
 
 type challengeData struct {
@@ -297,7 +300,7 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 		},
 		rateCache:          lru.New(expiration, 1*time.Minute),
 		botCache:           lru.New(expiration, 1*time.Hour),
-		goodBotLookup:      helper.IsIpGoodBot,
+		goodBotLookup:      helper.IsIpGoodBotContext,
 		verifiedCache:      lru.New(expiration, 1*time.Hour),
 		exemptIps:          ips,
 		tmpl:               tmpl,
@@ -357,33 +360,35 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	if config.EnableUptimeRobotBypass == "true" {
 		log.Info("UptimeRobot bypass enabled")
 		bc.uptimeRobotIPs = helper.NewUptimeRobotIPs()
-		go bc.uptimeRobotIPCheckLoop(ctx)
+		go uptimeRobotIPCheckLoop(ctx, log, bc.httpClient, bc.uptimeRobotIPs)
 	}
 
 	return &bc, nil
 }
 
-func (bc *CaptchaProtect) uptimeRobotIPCheckLoop(ctx context.Context) {
+func uptimeRobotIPCheckLoop(ctx context.Context, log *slog.Logger, httpClient *http.Client, uptimeRobotIPs *helper.UptimeRobotIPs) {
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
-
-	refresh := func() {
-		count, err := helper.RefreshUptimeRobotIPs(ctx, bc.log, bc.httpClient, bc.uptimeRobotIPs, helper.UptimeRobotIPRangeURL)
-		if err != nil {
-			bc.log.Error("failed to fetch UptimeRobot IPs", "err", err)
-			return
-		}
-		bc.log.Info("Updated UptimeRobot IPs", "count", count)
-	}
 
 	if ctx.Err() != nil {
 		return
 	}
-	refresh()
+	count, err := helper.RefreshUptimeRobotIPs(ctx, log, httpClient, uptimeRobotIPs, helper.UptimeRobotIPRangeURL)
+	if err != nil {
+		log.Error("failed to fetch UptimeRobot IPs", "err", err)
+	} else {
+		log.Info("Updated UptimeRobot IPs", "count", count)
+	}
+
 	for {
 		select {
 		case <-ticker.C:
-			refresh()
+			count, err := helper.RefreshUptimeRobotIPs(ctx, log, httpClient, uptimeRobotIPs, helper.UptimeRobotIPRangeURL)
+			if err != nil {
+				log.Error("failed to fetch UptimeRobot IPs", "err", err)
+				continue
+			}
+			log.Info("Updated UptimeRobot IPs", "count", count)
 		case <-ctx.Done():
 			return
 		}
@@ -687,6 +692,16 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 		var body = url.Values{}
 		body.Add("secret", bc.config.SecretKey)
 		body.Add("response", response)
+		if activeConfig.key == "cf-turnstile" {
+			idempotencyKey, err := randomUUID()
+			if err != nil {
+				bc.log.Error("unable to create turnstile idempotency key", "err", err)
+				http.Error(rw, "Internal error", http.StatusInternalServerError)
+				return http.StatusInternalServerError
+			}
+			body.Add("remoteip", ip)
+			body.Add("idempotency_key", idempotencyKey)
+		}
 		validationReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, activeConfig.validate, strings.NewReader(body.Encode()))
 		if err != nil {
 			bc.log.Error("unable to create captcha validation request", "url", activeConfig.validate, "err", err)
@@ -715,6 +730,28 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 		}
 
 		success = captchaResponse.Success
+		if success && activeConfig.key == "cf-turnstile" {
+			expectedHostname := captchaValidationHostname(req)
+			if captchaResponse.Hostname != expectedHostname {
+				bc.log.Warn("captcha hostname mismatch", "hostname", captchaResponse.Hostname, "expectedHostname", expectedHostname)
+				success = false
+			} else {
+				challengeTime, err := time.Parse(time.RFC3339Nano, captchaResponse.ChallengeTS)
+				if err != nil {
+					bc.log.Warn("invalid captcha challenge timestamp", "challenge_ts", captchaResponse.ChallengeTS, "err", err)
+					success = false
+				} else {
+					age := time.Since(challengeTime)
+					if age < 0 {
+						age = 0
+					}
+					if age > maxCaptchaChallengeAge {
+						bc.log.Warn("stale captcha challenge rejected", "challenge_ts", captchaResponse.ChallengeTS, "age", age)
+						success = false
+					}
+				}
+			}
+		}
 	}
 
 	if success {
@@ -729,6 +766,35 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	http.Error(rw, "Validation failed", http.StatusForbidden)
 
 	return http.StatusForbidden
+}
+
+func captchaValidationHostname(req *http.Request) string {
+	host := req.Host
+	if host == "" {
+		host = req.URL.Host
+	}
+	if hostname, _, err := net.SplitHostPort(host); err == nil {
+		return hostname
+	}
+	return host
+}
+
+func randomUUID() (string, error) {
+	var b [16]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return "", err
+	}
+
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+
+	return fmt.Sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		b[0], b[1], b[2], b[3],
+		b[4], b[5],
+		b[6], b[7],
+		b[8], b[9],
+		b[10], b[11], b[12], b[13], b[14], b[15],
+	), nil
 }
 
 func normalizeDestination(destination string) string {
