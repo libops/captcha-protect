@@ -3,6 +3,7 @@ package captcha_protect
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -1210,6 +1211,9 @@ func TestStateBookkeepingErrorBranches(t *testing.T) {
 }
 
 func TestVerifyChallengePage(t *testing.T) {
+	validChallengeTS := time.Now().Add(-1 * time.Minute).Format(time.RFC3339Nano)
+	validCaptchaResponse := fmt.Sprintf(`{"success":true,"hostname":"example.com","challenge_ts":%q}`, validChallengeTS)
+
 	tests := []struct {
 		name             string
 		provider         string
@@ -1233,7 +1237,7 @@ func TestVerifyChallengePage(t *testing.T) {
 				"cf-turnstile-response": "valid-token",
 				"destination":           "%2Fhome",
 			},
-			mockResponse:     `{"success":true}`,
+			mockResponse:     validCaptchaResponse,
 			expectedStatus:   http.StatusFound,
 			shouldSetCache:   true,
 			expectedLocation: "/home",
@@ -1245,7 +1249,7 @@ func TestVerifyChallengePage(t *testing.T) {
 				"cf-turnstile-response": "valid-token",
 				"destination":           "/Chrome%20+%20MariaDB%20",
 			},
-			mockResponse:     `{"success":true}`,
+			mockResponse:     validCaptchaResponse,
 			expectedStatus:   http.StatusFound,
 			shouldSetCache:   true,
 			expectedLocation: "/Chrome%20+%20MariaDB%20",
@@ -1278,7 +1282,7 @@ func TestVerifyChallengePage(t *testing.T) {
 				"cf-turnstile-response": "valid-token",
 				"destination":           "%ZZ",
 			},
-			mockResponse:     `{"success":true}`,
+			mockResponse:     validCaptchaResponse,
 			expectedStatus:   http.StatusFound,
 			shouldSetCache:   true,
 			expectedLocation: "/",
@@ -1331,6 +1335,215 @@ func TestVerifyChallengePage(t *testing.T) {
 				t.Errorf("Expected Location %q, got %q", tt.expectedLocation, rr.Header().Get("Location"))
 			}
 		})
+	}
+}
+
+func TestVerifyChallengePageRejectsInvalidSiteverifyMetadata(t *testing.T) {
+	tests := []struct {
+		name         string
+		mockResponse string
+	}{
+		{
+			name:         "success false",
+			mockResponse: fmt.Sprintf(`{"success":false,"hostname":"example.com","challenge_ts":%q}`, time.Now().Format(time.RFC3339Nano)),
+		},
+		{
+			name:         "hostname mismatch",
+			mockResponse: fmt.Sprintf(`{"success":true,"hostname":"evil.example","challenge_ts":%q}`, time.Now().Format(time.RFC3339Nano)),
+		},
+		{
+			name:         "stale challenge",
+			mockResponse: fmt.Sprintf(`{"success":true,"hostname":"example.com","challenge_ts":%q}`, time.Now().Add(-6*time.Minute).Format(time.RFC3339Nano)),
+		},
+		{
+			name:         "missing challenge timestamp",
+			mockResponse: `{"success":true,"hostname":"example.com"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.mockResponse))
+			}))
+			defer mockServer.Close()
+
+			config := CreateConfig()
+			config.SiteKey = "test"
+			config.SecretKey = "test"
+			config.ProtectRoutes = []string{"/"}
+			config.CaptchaProvider = "turnstile"
+
+			bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+			bc.captchaConfig.validate = mockServer.URL
+
+			req := httptest.NewRequest(http.MethodPost, "http://example.com/challenge", nil)
+			req.Form = make(map[string][]string)
+			req.Form.Set("cf-turnstile-response", "token-"+tt.name)
+
+			rr := httptest.NewRecorder()
+			status := bc.verifyChallengePage(rr, req, "1.2.3.4")
+
+			if status != http.StatusForbidden {
+				t.Fatalf("expected status %d, got %d", http.StatusForbidden, status)
+			}
+			if _, found := bc.verifiedCache.Get("1.2.3.4"); found {
+				t.Fatal("did not expect invalid siteverify response to set verified cache")
+			}
+		})
+	}
+}
+
+func TestVerifyChallengePageAllowsNonTurnstileWithoutMetadata(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer mockServer.Close()
+
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "hcaptcha"
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+	bc.captchaConfig.validate = mockServer.URL
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/challenge", nil)
+	req.Form = make(map[string][]string)
+	req.Form.Set("h-captcha-response", "valid-token")
+
+	rr := httptest.NewRecorder()
+	status := bc.verifyChallengePage(rr, req, "1.2.3.4")
+
+	if status != http.StatusFound {
+		t.Fatalf("expected status %d, got %d", http.StatusFound, status)
+	}
+	if _, found := bc.verifiedCache.Get("1.2.3.4"); !found {
+		t.Fatal("expected non-turnstile success response to set verified cache")
+	}
+}
+
+func TestVerifyChallengePageMatchesTurnstileHostnameWithoutRequestPort(t *testing.T) {
+	validChallengeTS := time.Now().Format(time.RFC3339Nano)
+	mockResponse := fmt.Sprintf(`{"success":true,"hostname":"example.com","challenge_ts":%q}`, validChallengeTS)
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(mockResponse))
+	}))
+	defer mockServer.Close()
+
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "turnstile"
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+	bc.captchaConfig.validate = mockServer.URL
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com:8443/challenge", nil)
+	req.Form = make(map[string][]string)
+	req.Form.Set("cf-turnstile-response", "valid-token")
+
+	rr := httptest.NewRecorder()
+	status := bc.verifyChallengePage(rr, req, "1.2.3.4")
+
+	if status != http.StatusFound {
+		t.Fatalf("expected status %d, got %d", http.StatusFound, status)
+	}
+}
+
+func TestVerifyChallengePageSendsTurnstileAdvancedValidationFields(t *testing.T) {
+	validChallengeTS := time.Now().Format(time.RFC3339Nano)
+	mockResponse := fmt.Sprintf(`{"success":true,"hostname":"example.com","challenge_ts":%q}`, validChallengeTS)
+	var siteverifyForm url.Values
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm failed: %v", err)
+		}
+		siteverifyForm = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(mockResponse))
+	}))
+	defer mockServer.Close()
+
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test-secret"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "turnstile"
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+	bc.captchaConfig.validate = mockServer.URL
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/challenge", nil)
+	req.Form = make(map[string][]string)
+	req.Form.Set("cf-turnstile-response", "valid-token")
+
+	status := bc.verifyChallengePage(httptest.NewRecorder(), req, "1.2.3.4")
+	if status != http.StatusFound {
+		t.Fatalf("expected status %d, got %d", http.StatusFound, status)
+	}
+
+	if got := siteverifyForm.Get("secret"); got != "test-secret" {
+		t.Fatalf("expected secret %q, got %q", "test-secret", got)
+	}
+	if got := siteverifyForm.Get("response"); got != "valid-token" {
+		t.Fatalf("expected response %q, got %q", "valid-token", got)
+	}
+	if got := siteverifyForm.Get("remoteip"); got != "1.2.3.4" {
+		t.Fatalf("expected remoteip %q, got %q", "1.2.3.4", got)
+	}
+
+	idempotencyKey := siteverifyForm.Get("idempotency_key")
+	if idempotencyKey == "" {
+		t.Fatal("expected idempotency_key to be sent")
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(idempotencyKey) {
+		t.Fatalf("expected idempotency_key to be UUID v4, got %q", idempotencyKey)
+	}
+}
+
+func TestVerifyChallengePageDoesNotSendTurnstileFieldsToOtherProviders(t *testing.T) {
+	var siteverifyForm url.Values
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm failed: %v", err)
+		}
+		siteverifyForm = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer mockServer.Close()
+
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test-secret"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "hcaptcha"
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+	bc.captchaConfig.validate = mockServer.URL
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/challenge", nil)
+	req.Form = make(map[string][]string)
+	req.Form.Set("h-captcha-response", "valid-token")
+
+	status := bc.verifyChallengePage(httptest.NewRecorder(), req, "1.2.3.4")
+	if status != http.StatusFound {
+		t.Fatalf("expected status %d, got %d", http.StatusFound, status)
+	}
+	if got := siteverifyForm.Get("remoteip"); got != "" {
+		t.Fatalf("expected remoteip to be omitted for hcaptcha, got %q", got)
+	}
+	if got := siteverifyForm.Get("idempotency_key"); got != "" {
+		t.Fatalf("expected idempotency_key to be omitted for hcaptcha, got %q", got)
 	}
 }
 
@@ -2111,7 +2324,7 @@ func TestUptimeRobotIPCheckLoopInitialFetch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		bc.uptimeRobotIPCheckLoop(ctx)
+		uptimeRobotIPCheckLoop(ctx, bc.log, bc.httpClient, bc.uptimeRobotIPs)
 		close(done)
 	}()
 
