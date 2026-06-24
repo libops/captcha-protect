@@ -1,0 +1,54 @@
+http:
+  routers:
+    protected-parent:
+      entryPoints:
+        - http
+      rule: "Host(`localhost`)"
+      middlewares:
+        - captcha-protect
+
+    nginx:
+      rule: "PathPrefix(`/`)"
+      priority: 1
+      service: nginx
+      parentRefs:
+        - protected-parent
+
+    nginx2:
+      rule: "PathPrefix(`/app2`)"
+      priority: 100
+      service: nginx2
+      parentRefs:
+        - protected-parent
+
+  services:
+    nginx:
+      loadBalancer:
+        servers:
+          - url: "http://nginx:80"
+    nginx2:
+      loadBalancer:
+        servers:
+          - url: "http://nginx2:80"
+
+  middlewares:
+    captcha-protect:
+      plugin:
+        captcha-protect:
+          captchaProvider: turnstile
+          window: 120
+          siteKey: 1x00000000000000000000AA
+          secretKey: 1x0000000000000000000000000000000AA
+          enableStatsPage: "true"
+          ipForwardedHeader: X-Forwarded-For
+          logLevel: DEBUG
+          protectParameters: "false"
+          goodBots: []
+          enableGooglebotIPCheck: "false"
+          enableUptimeRobotBypass: "false"
+          mode: regex
+          protectRoutes:
+            - "^/"
+          excludeRoutes:
+            - "\\/oai\\/request"
+            - "\\/node\\/\\d+\\/(book-)?manifest"

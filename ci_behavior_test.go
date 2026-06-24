@@ -1,30 +1,23 @@
 package captcha_protect
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/libops/captcha-protect/internal/helper"
 	lru "github.com/patrickmn/go-cache"
 )
 
-const ciRateLimit = uint(5)
 const ciRootSmokeIP = "192.0.2.10"
 const ciApp2SmokeIP = "198.51.100.10"
 
 func TestCILabelEquivalentMiddlewareBehavior(t *testing.T) {
 	bc := newCILabelEquivalentMiddleware(t, nil)
 
-	for i := uint(0); i < ciRateLimit; i++ {
-		assertNoRedirect(t, bc, ciRootSmokeIP, "/")
-	}
 	assertRedirect(t, bc, ciRootSmokeIP, "/", "/challenge?destination=%2F")
 
 	for _, route := range []string{
@@ -35,9 +28,6 @@ func TestCILabelEquivalentMiddlewareBehavior(t *testing.T) {
 		assertNoRedirect(t, bc, ciRootSmokeIP, route)
 	}
 
-	for i := uint(0); i < ciRateLimit; i++ {
-		assertNoRedirect(t, bc, ciApp2SmokeIP, "/app2")
-	}
 	assertRedirect(t, bc, ciApp2SmokeIP, "/app2", "/challenge?destination=%2Fapp2")
 }
 
@@ -49,9 +39,7 @@ func TestCILabelEquivalentGooglebotParameterBehavior(t *testing.T) {
 	bypass.googlebotIPs.Update([]string{"203.0.113.0/24"}, discardLogger())
 	bypass.config.EnableGooglebotIPCheck = "true"
 
-	for i := uint(0); i < ciRateLimit+1; i++ {
-		assertNoRedirect(t, bypass, googleIP, "/")
-	}
+	assertNoRedirect(t, bypass, googleIP, "/")
 
 	protectedParams := newCILabelEquivalentMiddleware(t, func(config *Config) {
 		config.ProtectParameters = "true"
@@ -60,9 +48,6 @@ func TestCILabelEquivalentGooglebotParameterBehavior(t *testing.T) {
 	protectedParams.googlebotIPs.Update([]string{"203.0.113.0/24"}, discardLogger())
 	protectedParams.config.EnableGooglebotIPCheck = "true"
 
-	for i := uint(0); i < ciRateLimit; i++ {
-		assertNoRedirect(t, protectedParams, googleIP, "/?foo=bar")
-	}
 	assertRedirect(t, protectedParams, googleIP, "/?foo=bar", "/challenge?destination=%2F%3Ffoo%3Dbar")
 }
 
@@ -74,52 +59,12 @@ func TestCILabelEquivalentUptimeRobotBypassBehavior(t *testing.T) {
 	bypass.uptimeRobotIPs.Update([]string{"203.0.113.10/32"}, discardLogger())
 	bypass.config.EnableUptimeRobotBypass = "true"
 
-	for i := uint(0); i < ciRateLimit+1; i++ {
-		assertNoRedirect(t, bypass, uptimeRobotIP, "/")
-	}
+	assertNoRedirect(t, bypass, uptimeRobotIP, "/")
 
 	disabled := newCILabelEquivalentMiddleware(t, nil)
 	disabled.uptimeRobotIPs = helper.NewUptimeRobotIPs()
 	disabled.uptimeRobotIPs.Update([]string{"203.0.113.10/32"}, discardLogger())
-	for i := uint(0); i < ciRateLimit; i++ {
-		assertNoRedirect(t, disabled, uptimeRobotIP, "/")
-	}
 	assertRedirect(t, disabled, uptimeRobotIP, "/", "/challenge?destination=%2F")
-}
-
-func TestPersistentStateSharingWithSynctest(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		stateFile := filepath.Join(t.TempDir(), "state.json")
-		writer := newStateOnlyCaptchaProtect(stateFile, 2)
-		reader := newStateOnlyCaptchaProtect(stateFile, 2)
-
-		ctx, cancel := context.WithCancel(t.Context())
-		done := make(chan struct{}, 1)
-		go func() {
-			writer.saveState(ctx)
-			done <- struct{}{}
-		}()
-
-		for i := uint(0); i < writer.config.RateLimit+1; i++ {
-			writer.registerRequest("192.0.0.0")
-		}
-
-		time.Sleep(stateSaveInterval(writer.config) + StateSaveJitter + 3*time.Second)
-		synctest.Wait()
-		reader.reconcileStateFromFileIfChanged()
-
-		v, ok := reader.rateCache.Get("192.0.0.0")
-		if !ok {
-			t.Fatal("expected reader instance to reconcile writer state")
-		}
-		if got, want := v.(uint), writer.config.RateLimit+1; got != want {
-			t.Fatalf("reconciled rate = %d, want %d", got, want)
-		}
-
-		cancel()
-		synctest.Wait()
-		<-done
-	})
 }
 
 func newCILabelEquivalentMiddleware(t *testing.T, mutate func(*Config)) *CaptchaProtect {
@@ -143,7 +88,6 @@ func newCILabelEquivalentMiddleware(t *testing.T, mutate func(*Config)) *Captcha
 
 func ciLabelEquivalentConfig() *Config {
 	config := CreateConfig()
-	config.RateLimit = ciRateLimit
 	config.Window = 120
 	config.CaptchaProvider = "poj"
 	config.SiteKey = "test-site-key"
@@ -164,16 +108,13 @@ func ciLabelEquivalentConfig() *Config {
 	return config
 }
 
-func newStateOnlyCaptchaProtect(stateFile string, rateLimit uint) *CaptchaProtect {
+func newStateOnlyCaptchaProtect(stateFile string) *CaptchaProtect {
 	config := ciLabelEquivalentConfig()
 	config.PersistentStateFile = stateFile
-	config.EnableStateReconciliation = "true"
-	config.RateLimit = rateLimit
 
 	return &CaptchaProtect{
 		config:        config,
 		log:           discardLogger(),
-		rateCache:     lru.New(time.Hour, lru.NoExpiration),
 		botCache:      lru.New(time.Hour, lru.NoExpiration),
 		verifiedCache: lru.New(time.Hour, lru.NoExpiration),
 	}

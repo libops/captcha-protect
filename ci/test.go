@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-const rateLimit = 5
 const rootSmokeIP = "192.0.2.10"
 const app2SmokeIP = "198.51.100.10"
 
@@ -55,10 +54,6 @@ func waitForService(url string) {
 }
 
 func assertProtectedRoute(ip, url, expectedURL string) {
-	for i := 0; i < rateLimit; i++ {
-		assertNoRedirect(ip, url)
-	}
-
 	output, err := httpRequest(ip, url)
 	if err != nil {
 		slog.Error("Request failed", "ip", ip, "url", url, "err", err)
@@ -167,9 +162,9 @@ func runCommand(name string, args ...string) {
 }
 
 func testCommandEnv() []string {
-	env := append(os.Environ(), fmt.Sprintf("RATE_LIMIT=%d", rateLimit))
+	env := os.Environ()
 	if traefikTag := os.Getenv("TRAEFIK_TAG"); traefikTag != "" {
-		env = append(env, fmt.Sprintf("TRAEFIK_TAG=%s", traefikTag))
+		env = append(env, "TRAEFIK_TAG="+traefikTag)
 	}
 	return env
 }

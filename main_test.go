@@ -19,100 +19,6 @@ import (
 	"github.com/libops/captcha-protect/internal/helper"
 )
 
-func TestParseIp(t *testing.T) {
-	tests := []struct {
-		name       string
-		ip         string
-		ipv4Mask   int
-		ipv6Mask   int
-		wantFull   string
-		wantSubnet string
-	}{
-		{
-			name:       "IPv4 /8",
-			ip:         "192.168.1.1",
-			ipv4Mask:   8,
-			wantFull:   "192.168.1.1",
-			wantSubnet: "192.0.0.0",
-		},
-		{
-			name:       "IPv4 /10",
-			ip:         "192.168.1.1",
-			ipv4Mask:   10,
-			wantFull:   "192.168.1.1",
-			wantSubnet: "192.128.0.0",
-		},
-		{
-			name:       "IPv4 /16",
-			ip:         "192.168.1.1",
-			ipv4Mask:   16,
-			wantFull:   "192.168.1.1",
-			wantSubnet: "192.168.0.0",
-		},
-		{
-			name:       "IPv4 /20",
-			ip:         "192.168.1.1",
-			ipv4Mask:   20,
-			wantFull:   "192.168.1.1",
-			wantSubnet: "192.168.0.0",
-		},
-		{
-			name:       "IPv4 /24",
-			ip:         "192.168.1.1",
-			ipv4Mask:   24,
-			wantFull:   "192.168.1.1",
-			wantSubnet: "192.168.1.0",
-		},
-		{
-			name:       "IPv4 /32",
-			ip:         "192.168.1.1",
-			ipv4Mask:   32,
-			wantFull:   "192.168.1.1",
-			wantSubnet: "192.168.1.1",
-		},
-		{
-			name:       "IPv6 /64",
-			ip:         "2001:0db8:85a3:1234:5678:8a2e:0370:7334",
-			ipv6Mask:   64,
-			wantFull:   "2001:0db8:85a3:1234:5678:8a2e:0370:7334",
-			wantSubnet: "2001:db8:85a3:1234::",
-		},
-		{
-			name:       "IPv6 /48",
-			ip:         "2001:0db8:85a3:1234:5678:8a2e:0370:7334",
-			ipv6Mask:   48,
-			wantFull:   "2001:0db8:85a3:1234:5678:8a2e:0370:7334",
-			wantSubnet: "2001:db8:85a3::",
-		},
-		{
-			name:       "Invalid IP returns same string",
-			ip:         "not.an.ip",
-			ipv4Mask:   16,
-			ipv6Mask:   64,
-			wantFull:   "not.an.ip",
-			wantSubnet: "not.an.ip",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			c := CreateConfig()
-			bc := &CaptchaProtect{
-				config:   c,
-				ipv4Mask: net.CIDRMask(tc.ipv4Mask, 32),
-				ipv6Mask: net.CIDRMask(tc.ipv6Mask, 128),
-			}
-			gotFull, gotSubnet := bc.ParseIp(tc.ip)
-			if gotFull != tc.wantFull {
-				t.Errorf("ParseIp(%q, %d, %d) got full = %q, want %q", tc.ip, tc.ipv4Mask, tc.ipv6Mask, gotFull, tc.wantFull)
-			}
-			if gotSubnet != tc.wantSubnet {
-				t.Errorf("ParseIp(%q, %d, %d) got subnet = %q, want %q", tc.ip, tc.ipv4Mask, tc.ipv6Mask, gotSubnet, tc.wantSubnet)
-			}
-		})
-	}
-}
-
 func TestRouteIsProtected(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -464,7 +370,7 @@ func TestGetClientIP(t *testing.T) {
 				t.Errorf("unexpected error %v", err)
 			}
 
-			ip, _ := bc.getClientIP(req)
+			ip := bc.getClientIP(req)
 			if ip != tc.expectedIP {
 				t.Errorf("expected ip %s, got %s", tc.expectedIP, ip)
 			}
@@ -484,7 +390,6 @@ func TestServeHTTP(t *testing.T) {
 	config := CreateConfig()
 	tests := []struct {
 		name           string
-		rateLimit      uint
 		expectedStatus uint
 		challengePage  string
 		expectedBody   string
@@ -492,7 +397,6 @@ func TestServeHTTP(t *testing.T) {
 	}{
 		{
 			name:           "Redirect to 302",
-			rateLimit:      0,
 			challengePage:  "/challenge",
 			expectedStatus: http.StatusFound,
 			expectedBody:   "/challenge?destination=%2Fsomepath",
@@ -500,7 +404,6 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:           "403 when changing default challenge code",
-			rateLimit:      0,
 			challengePage:  "/challenge",
 			expectedStatus: http.StatusFound,
 			challengeCode:  http.StatusForbidden,
@@ -508,7 +411,6 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:           "429 when challenging on same page",
-			rateLimit:      0,
 			challengePage:  "",
 			expectedStatus: http.StatusTooManyRequests,
 			expectedBody:   "One moment while we verify your network connection",
@@ -516,7 +418,6 @@ func TestServeHTTP(t *testing.T) {
 		},
 		{
 			name:           "403 when challenging on same page",
-			rateLimit:      0,
 			challengePage:  "",
 			expectedStatus: http.StatusForbidden,
 			challengeCode:  http.StatusForbidden,
@@ -527,7 +428,6 @@ func TestServeHTTP(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			config.SiteKey = "test-site-key"
 			config.SecretKey = "test-secret-key"
-			config.RateLimit = tc.rateLimit
 			config.CaptchaProvider = "turnstile"
 			config.ProtectRoutes = []string{"/"}
 			config.ChallengeURL = tc.challengePage
@@ -576,7 +476,6 @@ func TestServeHTTPAllowsGoodBotOnFirstRequest(t *testing.T) {
 	config := CreateConfig()
 	config.SiteKey = "test-site-key"
 	config.SecretKey = "test-secret-key"
-	config.RateLimit = 0
 	config.ProtectRoutes = []string{"/"}
 	config.GoodBots = []string{"yandex.com"}
 
@@ -699,26 +598,6 @@ func TestNewCaptchaProtectValidation(t *testing.T) {
 			expectError:  "unknown mode",
 		},
 		{
-			name:         "Invalid IPv4 mask - too small",
-			modifyConfig: func(c *Config) { c.IPv4SubnetMask = 5 },
-			expectError:  "invalid ipv4 mask",
-		},
-		{
-			name:         "Invalid IPv4 mask - too large",
-			modifyConfig: func(c *Config) { c.IPv4SubnetMask = 33 },
-			expectError:  "invalid ipv4 mask",
-		},
-		{
-			name:         "Invalid IPv6 mask - too small",
-			modifyConfig: func(c *Config) { c.IPv6SubnetMask = 5 },
-			expectError:  "invalid ipv6 mask",
-		},
-		{
-			name:         "Invalid IPv6 mask - too large",
-			modifyConfig: func(c *Config) { c.IPv6SubnetMask = 200 },
-			expectError:  "invalid ipv6 mask",
-		},
-		{
 			name: "Invalid CIDR in ExemptIPs",
 			modifyConfig: func(c *Config) {
 				c.ExemptIPs = []string{"not-a-cidr"}
@@ -766,43 +645,6 @@ func TestRedactedConfigDoesNotExposeSecretKey(t *testing.T) {
 	}
 }
 
-func TestRateLimiting(t *testing.T) {
-	config := CreateConfig()
-	config.SiteKey = "test"
-	config.SecretKey = "test"
-	config.ProtectRoutes = []string{"/"}
-	config.RateLimit = 5
-	config.Window = 10
-
-	bc, err := NewCaptchaProtect(context.Background(), nil, config, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	subnet := "192.168.0.0"
-
-	// Register 5 requests (at rate limit)
-	for i := 0; i < 5; i++ {
-		bc.registerRequest(subnet)
-		if bc.trippedRateLimit(subnet) {
-			t.Errorf("Should not trip rate limit at %d requests", i+1)
-		}
-	}
-
-	// 6th request should trip
-	bc.registerRequest(subnet)
-	if !bc.trippedRateLimit(subnet) {
-		t.Error("Should trip rate limit after exceeding")
-	}
-
-	// Different subnet should not be affected
-	differentSubnet := "10.0.0.0"
-	bc.registerRequest(differentSubnet)
-	if bc.trippedRateLimit(differentSubnet) {
-		t.Error("Different subnet should not be rate limited")
-	}
-}
-
 func TestIsGoodBotWithParameters(t *testing.T) {
 	config := CreateConfig()
 	config.SiteKey = "test"
@@ -842,7 +684,6 @@ func TestVerifiedCacheBypasses(t *testing.T) {
 	config.SiteKey = "test"
 	config.SecretKey = "test"
 	config.ProtectRoutes = []string{"/"}
-	config.RateLimit = 0 // Always challenge unless verified
 
 	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
 
@@ -870,7 +711,6 @@ func TestShouldApplyRegexExcludeRoutesIgnoreQueryString(t *testing.T) {
 	config.Mode = "regex"
 	config.ProtectRoutes = []string{"^/"}
 	config.ExcludeRoutes = []string{`\/oai\/request`, `\/node\/\d+\/(book-)?manifest`}
-	config.RateLimit = 0
 
 	bc, err := NewCaptchaProtect(context.Background(), nil, config, "test")
 	if err != nil {
@@ -918,8 +758,6 @@ func TestStatsPage(t *testing.T) {
 
 	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
 
-	// Add some test data
-	bc.rateCache.Set("192.168.0.0", uint(10), 1*time.Hour)
 	bc.verifiedCache.Set("1.2.3.4", true, 1*time.Hour)
 
 	tests := []struct {
@@ -948,10 +786,6 @@ func TestStatsPage(t *testing.T) {
 				if err := json.Unmarshal(rr.Body.Bytes(), &stats); err != nil {
 					t.Errorf("Failed to parse JSON: %v", err)
 				}
-				// Check that we have expected keys
-				if _, ok := stats["rate"]; !ok {
-					t.Error("Stats JSON missing 'rate' key")
-				}
 				if _, ok := stats["verified"]; !ok {
 					t.Error("Stats JSON missing 'verified' key")
 				}
@@ -966,7 +800,6 @@ func TestProtectHttpMethods(t *testing.T) {
 	config.SecretKey = "test"
 	config.ProtectRoutes = []string{"/"}
 	config.ProtectHttpMethods = []string{"GET", "POST"}
-	config.RateLimit = 0 // Always challenge
 
 	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
 
@@ -1035,17 +868,10 @@ func TestStatePersistence(t *testing.T) {
 	config.SecretKey = "test"
 	config.ProtectRoutes = []string{"/"}
 
-	// Manually save state by writing the file directly
-	// This tests the state format without relying on the background goroutine
-	// Use the new CacheEntry format with expiration timestamps
+	// Manually save state by writing the file directly.
+	// This tests restart persistence without relying on the background goroutine.
 	futureExpiration := time.Now().Add(1 * time.Hour).UnixNano()
 	jsonData, _ := json.Marshal(map[string]interface{}{
-		"rate": map[string]map[string]interface{}{
-			"192.168.0.0": {
-				"value":      uint(10),
-				"expiration": float64(futureExpiration),
-			},
-		},
 		"verified": map[string]map[string]interface{}{
 			"1.2.3.4": {
 				"value":      true,
@@ -1062,39 +888,12 @@ func TestStatePersistence(t *testing.T) {
 	bc2, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
 	bc2.loadStateFrom(tmpFile)
 
-	// Check rate cache
-	val, found := bc2.rateCache.Get("192.168.0.0")
-	if !found || val.(uint) != 10 {
-		t.Error("Rate cache state not persisted correctly")
-	}
-
 	// Check verified cache
-	_, found = bc2.verifiedCache.Get("1.2.3.4")
+	_, found := bc2.verifiedCache.Get("1.2.3.4")
 	if !found {
 		t.Error("Verified cache state not persisted correctly")
 	}
 
-}
-
-func TestRegisterRequestStopsIncrementingAfterRateLimitTrips(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "state.json")
-
-	bc := newStateOnlyCaptchaProtect(tmpFile, 2)
-
-	for i := 0; i < 5; i++ {
-		bc.registerRequest("192.168.0.0")
-	}
-
-	v, ok := bc.rateCache.Get("192.168.0.0")
-	if !ok {
-		t.Fatal("Expected rate cache entry")
-	}
-	if got, want := v.(uint), bc.config.RateLimit+1; got != want {
-		t.Fatalf("Expected sequential requests to stop incrementing at %d, got %d", want, got)
-	}
-	if got, want := bc.currentStateDirty(), uint64(bc.config.RateLimit+1); got != want {
-		t.Fatalf("Expected dirty counter to track only effective mutations, got %d want %d", got, want)
-	}
 }
 
 func TestStatePersistenceDisabledWithoutStateFile(t *testing.T) {
@@ -1108,7 +907,6 @@ func TestStatePersistenceDisabledWithoutStateFile(t *testing.T) {
 		t.Fatalf("NewCaptchaProtect failed: %v", err)
 	}
 
-	bc.registerRequest("192.168.0.0")
 	bc.markStateDirty()
 
 	if bc.currentStateDirty() != 0 {
@@ -1119,23 +917,11 @@ func TestStatePersistenceDisabledWithoutStateFile(t *testing.T) {
 	}
 }
 
-func TestStateSaveIntervalUsesFastCadenceOnlyWithReconciliation(t *testing.T) {
-	config := CreateConfig()
-	if got := stateSaveInterval(config); got != 60*time.Second {
-		t.Fatalf("default state save interval = %s, want 60s", got)
-	}
-
-	config.EnableStateReconciliation = "true"
-	if got := stateSaveInterval(config); got != 10*time.Second {
-		t.Fatalf("reconciliation state save interval = %s, want 10s", got)
-	}
-}
-
 func TestSaveStateFlushesDirtyStateOnCanceledContext(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "state.json")
-	bc := newStateOnlyCaptchaProtect(tmpFile, 2)
+	bc := newStateOnlyCaptchaProtect(tmpFile)
 
-	bc.rateCache.Set("192.168.0.0", uint(1), time.Hour)
+	bc.verifiedCache.Set("192.168.0.10", true, time.Hour)
 	bc.markStateDirty()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1153,20 +939,20 @@ func TestSaveStateFlushesDirtyStateOnCanceledContext(t *testing.T) {
 	}
 
 	var saved struct {
-		Rate map[string]json.RawMessage `json:"rate"`
+		Verified map[string]json.RawMessage `json:"verified"`
 	}
 	if err := json.Unmarshal(data, &saved); err != nil {
 		t.Fatalf("state file did not contain valid JSON: %v", err)
 	}
-	if _, ok := saved.Rate["192.168.0.0"]; !ok {
-		t.Fatal("expected dirty rate entry to be persisted")
+	if _, ok := saved.Verified["192.168.0.10"]; !ok {
+		t.Fatal("expected dirty verified entry to be persisted")
 	}
 }
 
 func TestSaveStateNowReturnsFalseAndKeepsDirtyStateOnWriteError(t *testing.T) {
 	statePath := t.TempDir()
-	bc := newStateOnlyCaptchaProtect(statePath, 2)
-	bc.rateCache.Set("192.168.0.0", uint(1), time.Hour)
+	bc := newStateOnlyCaptchaProtect(statePath)
+	bc.verifiedCache.Set("192.168.0.10", true, time.Hour)
 	bc.markStateDirty()
 
 	if bc.saveStateNow() {
@@ -1177,9 +963,9 @@ func TestSaveStateNowReturnsFalseAndKeepsDirtyStateOnWriteError(t *testing.T) {
 	}
 }
 
-func TestStateBookkeepingErrorBranches(t *testing.T) {
+func TestStateBookkeepingCounters(t *testing.T) {
 	missingFile := filepath.Join(t.TempDir(), "missing", "state.json")
-	bc := newStateOnlyCaptchaProtect(missingFile, 2)
+	bc := newStateOnlyCaptchaProtect(missingFile)
 
 	bc.stateMu.Lock()
 	bc.stateDirty = 1
@@ -1187,26 +973,6 @@ func TestStateBookkeepingErrorBranches(t *testing.T) {
 	bc.stateMu.Unlock()
 	if got := bc.unsavedStateChanges(); got != 0 {
 		t.Fatalf("unsavedStateChanges with saved counter ahead = %d, want 0", got)
-	}
-
-	bc.refreshStateFileModTime()
-	if !bc.stateFileModTime.IsZero() {
-		t.Fatal("refreshStateFileModTime should ignore missing state file")
-	}
-
-	bc.reconcileStateFromFileIfChanged()
-	if !bc.stateFileModTime.IsZero() {
-		t.Fatal("reconcileStateFromFileIfChanged should ignore missing state file")
-	}
-
-	invalidFile := filepath.Join(t.TempDir(), "state.json")
-	if err := os.WriteFile(invalidFile, []byte("{invalid json"), 0600); err != nil {
-		t.Fatalf("failed to write invalid state file: %v", err)
-	}
-	invalidBC := newStateOnlyCaptchaProtect(invalidFile, 2)
-	invalidBC.reconcileStateFromFileIfChanged()
-	if !invalidBC.stateFileModTime.IsZero() {
-		t.Fatal("failed reconciliation should not advance state file mod time")
 	}
 }
 
@@ -1643,9 +1409,8 @@ func TestLoadStateInvalidJSON(t *testing.T) {
 	}
 	bc.loadStateFrom(tmpFile)
 
-	// Caches should be empty
-	if bc.rateCache.ItemCount() != 0 {
-		t.Error("Rate cache should be empty after failed load")
+	if bc.verifiedCache.ItemCount() != 0 {
+		t.Error("Verified cache should be empty after failed load")
 	}
 
 	// Clean up the file before temp dir cleanup

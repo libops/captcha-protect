@@ -12,7 +12,6 @@ services:
             traefik.http.routers.nginx.middlewares: captcha-protect@docker
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.captchaProvider: turnstile
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.window: 120
-            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.rateLimit: ${RATE_LIMIT}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.siteKey: ${TURNSTILE_SITE_KEY}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.secretKey: ${TURNSTILE_SECRET_KEY}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableStatsPage: "true"
@@ -25,8 +24,6 @@ services:
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.mode: "regex"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectRoutes: "^/"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.excludeRoutes: "\\/oai\\/request,\\/node\\/\\d+\\/(book-)?manifest"
-            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.persistentStateFile: "/tmp/state.json"
-            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableStateReconciliation: "true"
         healthcheck:
             test: curl -fs http://localhost/healthz | grep -q OK || exit 1
             start_period: 5s
@@ -47,7 +44,6 @@ services:
             traefik.http.routers.nginx2.middlewares: captcha-protect@docker
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.captchaProvider: turnstile
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.window: 120
-            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.rateLimit: ${RATE_LIMIT}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.siteKey: ${TURNSTILE_SITE_KEY}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.secretKey: ${TURNSTILE_SECRET_KEY}
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableStatsPage: "true"
@@ -60,8 +56,6 @@ services:
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.mode: "regex"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.protectRoutes: "^/"
             traefik.http.middlewares.captcha-protect.plugin.captcha-protect.excludeRoutes: "\\/oai\\/request,\\/node\\/\\d+\\/(book-)?manifest"
-            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.persistentStateFile: "/tmp/state.json"
-            traefik.http.middlewares.captcha-protect.plugin.captcha-protect.enableStateReconciliation: "true"
         healthcheck:
             test: curl -fs http://localhost/healthz | grep -q OK || exit 1
             start_period: 5s
@@ -86,7 +80,6 @@ services:
             --experimental.localPlugins.captcha-protect.moduleName=github.com/libops/captcha-protect
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
-            - ./tmp:/tmp:rw
             - ./../:/plugins-local/src/github.com/libops/captcha-protect:r
         ports:
             - "80:80"
