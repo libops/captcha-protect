@@ -1161,6 +1161,74 @@ func TestVerifyChallengePageRejectsInvalidSiteverifyMetadata(t *testing.T) {
 	}
 }
 
+func TestVerifyChallengePageAllowsTurnstileTestKeysExampleHostname(t *testing.T) {
+	validChallengeTS := time.Now().Format(time.RFC3339Nano)
+	mockResponse := fmt.Sprintf(`{"success":true,"hostname":"example.com","challenge_ts":%q}`, validChallengeTS)
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(mockResponse))
+	}))
+	defer mockServer.Close()
+
+	config := CreateConfig()
+	config.SiteKey = "1x00000000000000000000AA"
+	config.SecretKey = "1x0000000000000000000000000000000AA"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "turnstile"
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+	bc.captchaConfig.validate = mockServer.URL
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/challenge", nil)
+	req.Form = make(map[string][]string)
+	req.Form.Set("cf-turnstile-response", "valid-token")
+
+	rr := httptest.NewRecorder()
+	status := bc.verifyChallengePage(rr, req, "1.2.3.4")
+
+	if status != http.StatusFound {
+		t.Fatalf("expected status %d, got %d", http.StatusFound, status)
+	}
+	if _, found := bc.verifiedCache.Get("1.2.3.4"); !found {
+		t.Fatal("expected turnstile test key response to set verified cache")
+	}
+}
+
+func TestVerifyChallengePageRejectsExampleHostnameWithoutTurnstileTestKeys(t *testing.T) {
+	validChallengeTS := time.Now().Format(time.RFC3339Nano)
+	mockResponse := fmt.Sprintf(`{"success":true,"hostname":"example.com","challenge_ts":%q}`, validChallengeTS)
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(mockResponse))
+	}))
+	defer mockServer.Close()
+
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.CaptchaProvider = "turnstile"
+
+	bc, _ := NewCaptchaProtect(context.Background(), nil, config, "test")
+	bc.captchaConfig.validate = mockServer.URL
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/challenge", nil)
+	req.Form = make(map[string][]string)
+	req.Form.Set("cf-turnstile-response", "valid-token")
+
+	rr := httptest.NewRecorder()
+	status := bc.verifyChallengePage(rr, req, "1.2.3.4")
+
+	if status != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, status)
+	}
+	if _, found := bc.verifiedCache.Get("1.2.3.4"); found {
+		t.Fatal("did not expect non-test key response to set verified cache")
+	}
+}
+
 func TestVerifyChallengePageAllowsNonTurnstileWithoutMetadata(t *testing.T) {
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
