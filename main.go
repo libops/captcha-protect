@@ -38,7 +38,22 @@ const (
 	DefaultHealthCheckFailureThreshold = 0 // Number of consecutive health check failures before opening circuit
 	goodBotLookupTimeout               = 2 * time.Second
 	maxCaptchaChallengeAge             = 5 * time.Minute
+	turnstileTestHostname              = "example.com"
 )
+
+var turnstileTestSiteKeys = map[string]struct{}{
+	"1x00000000000000000000AA": {},
+	"2x00000000000000000000AB": {},
+	"1x00000000000000000000BB": {},
+	"2x00000000000000000000BB": {},
+	"3x00000000000000000000FF": {},
+}
+
+var turnstileTestSecretKeys = map[string]struct{}{
+	"1x0000000000000000000000000000000AA": {},
+	"2x0000000000000000000000000000000AA": {},
+	"3x0000000000000000000000000000000AA": {},
+}
 
 type circuitState int
 
@@ -696,7 +711,8 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 		success = captchaResponse.Success
 		if success && activeConfig.key == "cf-turnstile" {
 			expectedHostname := captchaValidationHostname(req)
-			if captchaResponse.Hostname != expectedHostname {
+			skipHostnameValidation := bc.usesTurnstileTestKeys() && captchaResponse.Hostname == turnstileTestHostname
+			if !skipHostnameValidation && captchaResponse.Hostname != expectedHostname {
 				bc.log.Warn("captcha hostname mismatch", "hostname", captchaResponse.Hostname, "expectedHostname", expectedHostname)
 				success = false
 			} else {
@@ -741,6 +757,12 @@ func captchaValidationHostname(req *http.Request) string {
 		return hostname
 	}
 	return host
+}
+
+func (bc *CaptchaProtect) usesTurnstileTestKeys() bool {
+	_, hasTestSiteKey := turnstileTestSiteKeys[bc.config.SiteKey]
+	_, hasTestSecretKey := turnstileTestSecretKeys[bc.config.SecretKey]
+	return hasTestSiteKey && hasTestSecretKey
 }
 
 func randomUUID() (string, error) {
