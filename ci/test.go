@@ -131,6 +131,7 @@ func traefikPluginLogFailure(output string) (string, bool) {
 		"Plugins are disabled",
 		"failed to create Yaegi interpreter",
 		"failed to import plugin code",
+		"failed to eval New",
 		"cannot use type",
 		"cannot define new methods",
 	}

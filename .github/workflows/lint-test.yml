@@ -23,6 +23,12 @@ jobs:
       - name: check YML
         run: yq . .traefik.yml
 
+      - name: check Traefik module path
+        run: |
+          module_path="$(go list -m)"
+          test "$module_path" = "github.com/libops/captcha-protect"
+          test "$(yq '.import' .traefik.yml)" = "$module_path"
+
       - name: go mod tidy
         run: |
           go mod tidy
