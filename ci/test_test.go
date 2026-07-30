@@ -14,6 +14,18 @@ func TestTraefikPluginLogFailureDetectsYaegiImportErrors(t *testing.T) {
 	}
 }
 
+func TestTraefikPluginLogFailureDetectsEvalErrors(t *testing.T) {
+	logs := `traefik-1  | {"level":"error","plugins":["captcha-protect"],"error":"failed to eval New: 1:28: undefined: v2","message":"Plugins are disabled because an error has occurred."}`
+
+	failure, found := traefikPluginLogFailure(logs)
+	if !found {
+		t.Fatal("expected Traefik plugin eval failure to be detected")
+	}
+	if failure != "Plugins are disabled" {
+		t.Fatalf("expected first detected failure %q, got %q", "Plugins are disabled", failure)
+	}
+}
+
 func TestTraefikPluginLogFailureAllowsCleanLogs(t *testing.T) {
 	logs := `traefik-1  | {"level":"info","message":"Configuration loaded from flags."}`
 
