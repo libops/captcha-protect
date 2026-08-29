@@ -45,6 +45,7 @@ http:
           protectParameters: "false"
           goodBots: []
           enableGooglebotIPCheck: "false"
+          enableCommonCrawlIPCheck: "false"
           enableUptimeRobotBypass: "false"
           mode: regex
           protectRoutes:
