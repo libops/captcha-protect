@@ -679,6 +679,39 @@ func TestIsGoodBotWithParameters(t *testing.T) {
 	}
 }
 
+func TestCreateConfigEnablesCommonCrawlIPCheckByDefault(t *testing.T) {
+	if got := CreateConfig().EnableCommonCrawlIPCheck; got != "true" {
+		t.Fatalf("EnableCommonCrawlIPCheck = %q, want true", got)
+	}
+}
+
+func TestCommonCrawlIPCheckHonorsProtectParameters(t *testing.T) {
+	config := CreateConfig()
+	config.SiteKey = "test"
+	config.SecretKey = "test"
+	config.ProtectRoutes = []string{"/"}
+	config.EnableCommonCrawlIPCheck = "false"
+
+	bc, err := NewCaptchaProtect(t.Context(), nil, config, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bc.config.EnableCommonCrawlIPCheck = "true"
+	bc.commonCrawlIPs = helper.NewCommonCrawlIPs()
+	bc.commonCrawlIPs.Update([]string{"203.0.113.10/32"}, discardLogger())
+
+	withoutParameters := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	if !bc.isGoodBot(withoutParameters, "203.0.113.10") {
+		t.Fatal("expected verified Common Crawl IP to bypass without parameters")
+	}
+
+	bc.config.ProtectParameters = "true"
+	withParameters := httptest.NewRequest(http.MethodGet, "http://example.com/?foo=bar", nil)
+	if bc.isGoodBot(withParameters, "203.0.113.10") {
+		t.Fatal("expected protectParameters to challenge verified Common Crawl IP")
+	}
+}
+
 func TestVerifiedCacheBypasses(t *testing.T) {
 	config := CreateConfig()
 	config.SiteKey = "test"

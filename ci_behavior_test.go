@@ -60,6 +60,7 @@ func TestCILabelEquivalentUptimeRobotBypassBehavior(t *testing.T) {
 	bypass.config.EnableUptimeRobotBypass = "true"
 
 	assertNoRedirect(t, bypass, uptimeRobotIP, "/")
+	assertNoRedirect(t, bypass, uptimeRobotIP, "/?foo=bar")
 
 	disabled := newCILabelEquivalentMiddleware(t, nil)
 	disabled.uptimeRobotIPs = helper.NewUptimeRobotIPs()
@@ -98,6 +99,7 @@ func ciLabelEquivalentConfig() *Config {
 	config.ProtectParameters = "false"
 	config.GoodBots = []string{}
 	config.EnableGooglebotIPCheck = "false"
+	config.EnableCommonCrawlIPCheck = "false"
 	config.EnableUptimeRobotBypass = "false"
 	config.Mode = "regex"
 	config.ProtectRoutes = []string{"^/"}
