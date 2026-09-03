@@ -116,6 +116,27 @@ func TestRouteIsProtected(t *testing.T) {
 			path:     "/not-ajax",
 			expected: true,
 		},
+		{
+			name: "Dotted PID unprotected without protectAllExtensions",
+			config: Config{
+				ProtectRoutes:         []string{"/islandora/object"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{},
+			},
+			path:     "/islandora/object/namespace:foo.bar.baz",
+			expected: false,
+		},
+		{
+			name: "Dotted PID protected with protectAllExtensions",
+			config: Config{
+				ProtectRoutes:         []string{"/islandora/object"},
+				ProtectFileExtensions: []string{},
+				ExcludeRoutes:         []string{},
+				ProtectAllExtensions:  "true",
+			},
+			path:     "/islandora/object/namespace:foo.bar.baz",
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -131,6 +152,9 @@ func TestRouteIsProtected(t *testing.T) {
 				c.SiteKey = "test-site-key"
 				c.SecretKey = "test-secret-key"
 				c.ProtectFileExtensions = append(c.ProtectFileExtensions, tt.config.ProtectFileExtensions...)
+				if tt.config.ProtectAllExtensions != "" {
+					c.ProtectAllExtensions = tt.config.ProtectAllExtensions
+				}
 
 				if useRegex {
 					// Convert each route to ^... regex for "HasPrefix" behavior

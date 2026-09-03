@@ -71,6 +71,7 @@ type Config struct {
 	ProtectRoutes         []string `json:"protectRoutes"`
 	ExcludeRoutes         []string `json:"excludeRoutes"`
 	ProtectFileExtensions []string `json:"protectFileExtensions"`
+	ProtectAllExtensions  string   `json:"protectAllExtensions"`
 	ProtectHttpMethods    []string `json:"protectHttpMethods"`
 	GoodBots              []string `json:"goodBots"`
 	ExemptIPs             []string `json:"exemptIps"`
@@ -150,6 +151,7 @@ func CreateConfig() *Config {
 		ExcludeRoutes:            []string{},
 		ProtectHttpMethods:       []string{},
 		ProtectFileExtensions:    []string{},
+		ProtectAllExtensions:     "false",
 		GoodBots:                 []string{},
 		ExemptIPs:                []string{},
 		ExemptUserAgents:         []string{},
@@ -921,6 +923,11 @@ func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
 // isExtensionProtected checks if a file extension should be protected based on the configured list.
 // Returns true if the path has no extension (likely HTML) or if the extension matches the protected list.
 func (bc *CaptchaProtect) isExtensionProtected(path string) bool {
+	// When enabled, protect any matched route regardless of extension (filepath.Ext misreads dotted
+	// content IDs as static assets).
+	if bc.config.ProtectAllExtensions == "true" {
+		return true
+	}
 	ext := filepath.Ext(path)
 	ext = strings.TrimPrefix(ext, ".")
 	if ext == "" {
